@@ -18,7 +18,7 @@ Server bilkul khali ho — Python/Node kuch nahi — ye steps follow karein.
 sudo apt update
 sudo apt install -y git
 
-sudo git clone https://github.com/YOUR_USERNAME/jams.git /opt/jams
+sudo git clone https://github.com/RehanALiBalti/judicial-ai-demo.git /opt/jams
 sudo chown -R www-data:www-data /opt/jams
 cd /opt/jams
 sudo DOMAIN=SERVER_IP bash deploy/ubuntu-setup.sh
@@ -345,5 +345,5 @@ https://github.com/settings/tokens → Generate new token (classic) → `repo` s
 ### 3. Server par clone
 
 ```bash
-sudo git clone https://github.com/YOUR_USERNAME/jams.git /opt/jams
+sudo git clone https://github.com/RehanALiBalti/judicial-ai-demo.git /opt/jams
 ```

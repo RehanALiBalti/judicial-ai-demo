@@ -96,7 +96,7 @@ Then start the Python backend. Verify at `http://127.0.0.1:8000/api/health`.
 ## Ubuntu server (production)
 
 ```bash
-sudo git clone https://github.com/YOUR_USERNAME/jams.git /opt/jams
+sudo git clone https://github.com/RehanALiBalti/judicial-ai-demo.git /opt/jams
 sudo chown -R www-data:www-data /opt/jams
 cd /opt/jams
 sudo DOMAIN=YOUR_SERVER_IP bash deploy/ubuntu-setup.sh
