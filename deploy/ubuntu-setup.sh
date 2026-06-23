@@ -39,9 +39,18 @@ fi
 
 if [[ -f "$APP_DIR/frontend/package.json" ]]; then
   echo "==> Build frontend"
+  NPM_CACHE="$APP_DIR/.npm-cache"
+  APP_HOME="$APP_DIR/.home"
+  mkdir -p "$NPM_CACHE" "$APP_HOME"
+  chown -R "$APP_USER:$APP_USER" "$NPM_CACHE" "$APP_HOME" "$APP_DIR/frontend"
+  rm -rf "$APP_DIR/frontend/node_modules" "$APP_DIR/frontend/dist"
   cd "$APP_DIR/frontend"
-  sudo -u "$APP_USER" npm ci 2>/dev/null || sudo -u "$APP_USER" npm install
-  sudo -u "$APP_USER" env VITE_API_URL= npm run build
+  sudo -u "$APP_USER" env \
+    HOME="$APP_HOME" \
+    NPM_CONFIG_CACHE="$NPM_CACHE" \
+    npm install --no-audit --no-fund
+  sudo -u "$APP_USER" env HOME="$APP_HOME" VITE_API_URL= npm run build
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR/frontend/dist"
 fi
 
 if [[ ! -f "$APP_DIR/.env" && -f "$APP_DIR/deploy/env.example" ]]; then

@@ -21,7 +21,7 @@ sudo apt install -y git
 sudo git clone https://github.com/RehanALiBalti/judicial-ai-demo.git /opt/jams
 sudo chown -R www-data:www-data /opt/jams
 cd /opt/jams
-sudo DOMAIN=SERVER_IP bash deploy/ubuntu-setup.sh
+sudo DOMAIN=65.108.236.135 bash /opt/jams/deploy/ubuntu-setup.sh
 ```
 
 Baad mein code update:
@@ -59,16 +59,16 @@ Upload location: **`/home/ubuntu/`** (ya jo bhi aapka SSH user ho)
 
 | Method | Command / Tool |
 |--------|----------------|
-| **SCP (recommended)** | `scp E:\python\ji\jams.zip ubuntu@SERVER_IP:/home/ubuntu/` |
+| **SCP (recommended)** | `scp E:\python\ji\jams.zip ubuntu@65.108.236.135:/home/ubuntu/` |
 | **WinSCP / FileZilla** | Connect karein → right panel mein `/home/ubuntu/` → zip drag & drop |
 | **Cloud panel** | Provider ka file upload → phir SSH se move karein |
 
-`SERVER_IP` = apne Ubuntu instance ka public IP (e.g. `203.0.113.10`)
+`65.108.236.135` = apne Ubuntu instance ka public IP (e.g. `203.0.113.10`)
 
 ### C) Server par SSH login
 
 ```bash
-ssh ubuntu@SERVER_IP
+ssh ubuntu@65.108.236.135
 ```
 
 (Pehli dafa password ya SSH key provider se milta hai.)
@@ -102,10 +102,10 @@ sudo chown -R www-data:www-data /opt/jams
 
 ```bash
 cd /opt/jams
-sudo DOMAIN=SERVER_IP bash deploy/ubuntu-setup.sh
+sudo DOMAIN=65.108.236.135 bash /opt/jams/deploy/ubuntu-setup.sh
 ```
 
-`SERVER_IP` ki jagah apna real IP likhein.
+`65.108.236.135` ki jagah apna real IP likhein.
 
 Ye script 10–20 minute le sakti hai (Ollama model download).
 
@@ -133,7 +133,7 @@ sudo ufw allow OpenSSH
 sudo ufw allow 'Nginx Full'
 ```
 
-Browser: **`http://SERVER_IP`**
+Browser: **`http://65.108.236.135`**
 
 ### G) Pehli dafa data
 
@@ -149,7 +149,7 @@ Windows ka `data/jams_store.json` Ubuntu par theek kaam nahi karega. Server par:
 From your Windows machine (PowerShell):
 
 ```powershell
-scp -r E:\python\ji\judicial-ai-demo ubuntu@YOUR_SERVER_IP:/tmp/jams
+scp -r E:\python\ji\judicial-ai-demo ubuntu@YOUR_65.108.236.135:/tmp/jams
 ```
 
 On Ubuntu:
@@ -167,10 +167,10 @@ sudo chown -R www-data:www-data /opt/jams
 
 ```bash
 cd /opt/jams
-sudo DOMAIN=YOUR_SERVER_IP bash deploy/ubuntu-setup.sh
+sudo DOMAIN=65.108.236.135 bash /opt/jams/deploy/ubuntu-setup.sh
 ```
 
-Replace `YOUR_SERVER_IP` with your public IP or domain (e.g. `203.0.113.10` or `jams.example.com`).
+Replace `YOUR_65.108.236.135` with your public IP or domain (e.g. `203.0.113.10` or `jams.example.com`).
 
 ---
 
@@ -208,7 +208,7 @@ sudo systemctl status jams-backend
 sudo systemctl reload nginx
 ```
 
-Open: `http://YOUR_SERVER_IP`
+Open: `http://YOUR_65.108.236.135`
 
 ---
 
@@ -255,7 +255,7 @@ npm install
 npm run dev -- --host 0.0.0.0
 ```
 
-Set in `.env`: `CORS_ORIGINS=http://SERVER_IP:5173`
+Set in `.env`: `CORS_ORIGINS=http://65.108.236.135:5173`
 
 For production, always use **nginx + built frontend** (`npm run build`), not Vite dev server.
 
@@ -288,7 +288,19 @@ sudo systemctl reload nginx
 | Chat returns "AI generation failed" | `ollama list`, ensure `qwen2.5:1.5b` is pulled; `curl http://127.0.0.1:11434/api/tags` |
 | 502 Bad Gateway | `sudo journalctl -u jams-backend -f` — backend still loading embeddings (~1–2 min first start) |
 | Empty cases | Run **FCCP Import → Sync** on the server |
-| CORS errors | Add your browser URL to `CORS_ORIGINS` in `.env` |
+| `npm error EACCES /var/www/.npm` | Frontend build manually (neeche commands) |
+
+**Frontend build fix (server par):**
+
+```bash
+sudo rm -rf /opt/jams/frontend/node_modules
+sudo mkdir -p /opt/jams/.npm-cache /opt/jams/.home
+sudo chown -R www-data:www-data /opt/jams
+
+cd /opt/jams/frontend
+sudo -u www-data env HOME=/opt/jams/.home NPM_CONFIG_CACHE=/opt/jams/.npm-cache npm install --no-audit --no-fund
+sudo -u www-data env HOME=/opt/jams/.home VITE_API_URL= npm run build
+```
 
 **Logs:**
 
@@ -346,4 +358,4 @@ https://github.com/settings/tokens → Generate new token (classic) → `repo` s
 
 ```bash
 sudo git clone https://github.com/RehanALiBalti/judicial-ai-demo.git /opt/jams
-```
+    ```

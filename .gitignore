@@ -26,6 +26,8 @@ data/fccp/pdfs/*
 # Uploads & temp
 uploads/
 .gradio/
+.npm-cache/
+.home/
 
 # OS / IDE
 .DS_Store
