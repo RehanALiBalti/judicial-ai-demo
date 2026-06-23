@@ -1,0 +1,14 @@
+gradio>=4.0.0
+pypdf>=4.0.0
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.4
+requests>=2.31.0
+numpy>=1.24.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+beautifulsoup4>=4.12.0
+lxml>=5.0.0
+
+# LLM: Ollama (qwen2.5:1.5b) — install Ollama separately, not via pip
+# Embeddings use sentence-transformers (pulls torch as dependency)

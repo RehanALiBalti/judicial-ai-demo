@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# Local runtime data (re-sync on server via FCCP Import)
+data/jams_store.json
+data/store.json
+data/faiss.index
+data/fccp/manifest.json
+data/fccp/pdfs/*
+!data/fccp/pdfs/.gitkeep
+
+# Uploads & temp
+uploads/
+.gradio/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log

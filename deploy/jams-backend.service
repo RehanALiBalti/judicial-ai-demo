@@ -1,0 +1,19 @@
+[Unit]
+Description=JAMS Judicial AI Backend (FastAPI)
+After=network.target ollama.service
+Wants=ollama.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/jams
+EnvironmentFile=/opt/jams/.env
+ExecStart=/opt/jams/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+# Embeddings + FAISS are in-memory; use a single worker
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target
