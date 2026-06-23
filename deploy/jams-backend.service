@@ -10,8 +10,9 @@ Group=www-data
 WorkingDirectory=/opt/jams
 EnvironmentFile=/opt/jams/.env
 ExecStart=/opt/jams/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
-Restart=on-failure
+Restart=always
 RestartSec=5
+StartLimitIntervalSec=0
 # Embeddings + FAISS are in-memory; use a single worker
 TimeoutStartSec=300
 

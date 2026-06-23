@@ -200,15 +200,36 @@ sudo systemctl enable ollama
 sudo systemctl start ollama
 ollama pull qwen2.5:1.5b
 
-# Backend
+# Backend (auto-restart on crash + boot)
+sudo systemctl enable jams-backend
 sudo systemctl start jams-backend
 sudo systemctl status jams-backend
 
-# Nginx
+# Nginx (frontend static files + API proxy)
+sudo systemctl enable nginx
 sudo systemctl reload nginx
 ```
 
 Open: `http://YOUR_65.108.236.135`
+
+### PM2 ki zaroorat nahi — systemd use karein
+
+| Component | Production mein kya chalta hai | Crash / reboot |
+|-----------|-------------------------------|----------------|
+| **Frontend** | `frontend/dist` static files — **nginx** serve karta hai | Node/PM2 **nahi** chahiye |
+| **Backend (Python)** | `jams-backend` **systemd** service | Crash par auto-restart (`Restart=always`) |
+| **LLM** | **Ollama** systemd service | `systemctl enable ollama` |
+| **Web server** | **nginx** systemd | `systemctl enable nginx` |
+
+PM2 Node.js apps ke liye hai. Aapka React build ho chuka hota hai — alag process nahi chalti.
+
+**Useful commands:**
+
+```bash
+sudo systemctl status jams-backend nginx ollama
+sudo journalctl -u jams-backend -f
+sudo systemctl restart jams-backend
+```
 
 ---
 
