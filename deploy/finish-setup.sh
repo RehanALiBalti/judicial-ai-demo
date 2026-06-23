@@ -29,7 +29,7 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
   echo "==> Created $APP_DIR/.env — edit CORS_ORIGINS"
 fi
 
-mkdir -p "$APP_DIR/data/fccp/pdfs"
+mkdir -p "$APP_DIR/data/fccp/pdfs" "$APP_DIR/.npm-cache" "$APP_DIR/.home" "$APP_DIR/.cache"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 cp "$APP_DIR/deploy/jams-backend.service" /etc/systemd/system/jams-backend.service

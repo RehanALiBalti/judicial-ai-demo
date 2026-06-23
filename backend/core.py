@@ -30,6 +30,29 @@ EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b")
 
+
+def _configure_runtime_cache() -> None:
+    """Use writable cache under the app dir (www-data cannot write /var/www/.cache)."""
+    app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    cache_root = os.getenv("JAMS_CACHE_DIR", os.path.join(app_root, ".cache"))
+    home = os.getenv("HOME", os.path.join(app_root, ".home"))
+    os.environ.setdefault("HOME", home)
+    os.environ.setdefault("XDG_CACHE_HOME", cache_root)
+    os.environ.setdefault("HF_HOME", os.path.join(cache_root, "huggingface"))
+    os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "huggingface"))
+    os.environ.setdefault("TORCH_HOME", os.path.join(cache_root, "torch"))
+    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", os.path.join(cache_root, "sentence_transformers"))
+    for path in {
+        home,
+        cache_root,
+        os.environ["HF_HOME"],
+        os.environ["TORCH_HOME"],
+        os.environ["SENTENCE_TRANSFORMERS_HOME"],
+    }:
+        os.makedirs(path, exist_ok=True)
+
+
+_configure_runtime_cache()
 print(f"Loading JAMS embeddings ({EMBEDDING_MODEL_NAME})...")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 print(f"JAMS ready — LLM via Ollama: {OLLAMA_MODEL}")
