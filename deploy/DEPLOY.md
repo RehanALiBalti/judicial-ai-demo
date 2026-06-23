@@ -309,9 +309,22 @@ sudo systemctl reload nginx
 | Chat returns "AI generation failed" | `ollama list`, ensure `qwen2.5:1.5b` is pulled; `curl http://127.0.0.1:11434/api/tags` |
 | 502 Bad Gateway | `sudo journalctl -u jams-backend -f` — backend still loading embeddings (~1–2 min first start) |
 | Empty cases | Run **FCCP Import → Sync** on the server |
-| `npm error EACCES /var/www/.npm` | Frontend build manually (neeche commands) |
+| **Backend offline** in React UI | Backend/nginx not running — run finish script or commands below |
 
-**Frontend build fix (server par):**
+**Backend offline fix:**
+
+```bash
+# Quick finish (after git pull)
+sudo DOMAIN=65.108.236.135 bash /opt/jams/deploy/finish-setup.sh
+
+# Or manual checks:
+sudo systemctl status jams-backend nginx
+curl http://127.0.0.1:8000/api/health
+curl http://127.0.0.1/api/stats
+sudo journalctl -u jams-backend -n 50 --no-pager
+```
+
+**Frontend build fix (npm EACCES):**
 
 ```bash
 sudo rm -rf /opt/jams/frontend/node_modules
