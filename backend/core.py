@@ -10,21 +10,26 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import faiss
-import numpy as np
 import requests
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
 
 from backend.persistence import load_store, manifest_item_key, save_store
+from backend.rag import llm as rag_llm
+from backend.rag.vectorstore import (
+    add_document_chunks,
+    build_document_search_text,
+    deduplicate_results as _dedupe_results,
+    search_documents,
+    search_temp_documents,
+    sync_vectorstore,
+)
 
 # ---------------------------------------------------------------------------
-# In-memory store (session demo)
+# In-memory store
 # ---------------------------------------------------------------------------
 
 cases: List[Dict[str, Any]] = []
 documents: List[Dict[str, Any]] = []
-faiss_index = None
 
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -53,9 +58,7 @@ def _configure_runtime_cache() -> None:
 
 
 _configure_runtime_cache()
-print(f"Loading JAMS embeddings ({EMBEDDING_MODEL_NAME})...")
-embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-print(f"JAMS ready — LLM via Ollama: {OLLAMA_MODEL}")
+print(f"JAMS ready — LangChain RAG + Ollama: {OLLAMA_MODEL}")
 
 
 # ---------------------------------------------------------------------------
@@ -237,31 +240,13 @@ def auto_fill_metadata_from_path(file_path: str, file_name: str) -> Dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# Indexing + search
+# Indexing + search (LangChain Chroma + MMR)
 # ---------------------------------------------------------------------------
-
-def build_document_search_text(doc: Dict[str, Any]) -> str:
-    return f"""
-Case ID: {doc.get('case_id', '')}
-Case Title: {doc.get('title', '')}
-Court: {doc.get('court', '')}
-Author Judge: {doc.get('author_judge', '')}
-Decision Date: {doc.get('decision_date', '')}
-Page: {doc.get('page', '')}
-Text: {doc.get('text', '')}
-""".strip()
 
 
 def rebuild_faiss_index() -> None:
-    global faiss_index
-    if not documents:
-        faiss_index = None
-        return
-    texts = [build_document_search_text(doc) for doc in documents]
-    embeddings = embedding_model.encode(texts, convert_to_numpy=True)
-    dimension = embeddings.shape[1]
-    faiss_index = faiss.IndexFlatL2(dimension)
-    faiss_index.add(embeddings.astype("float32"))
+    """Rebuild persisted vector index (Chroma). Kept name for compatibility."""
+    sync_vectorstore(documents)
 
 
 def validate_case_upload(file_path: Optional[str], case_title: str, court_name: str, decision_date: str) -> List[str]:
@@ -357,9 +342,10 @@ def upload_case_from_path(
     cases.append(case_record)
 
     added_chunks = 0
+    new_chunks: List[Dict[str, Any]] = []
     for page in pages:
         for chunk_index, chunk in enumerate(chunk_text(page["text"])):
-            documents.append({
+            chunk_doc = {
                 "case_id": case_id,
                 "title": case_title.strip(),
                 "court": court_name.strip(),
@@ -369,10 +355,12 @@ def upload_case_from_path(
                 "text": chunk,
                 "source_type": "indexed_case",
                 "author_judge": extra_meta.get("author_judge"),
-            })
+            }
+            documents.append(chunk_doc)
+            new_chunks.append(chunk_doc)
             added_chunks += 1
 
-    rebuild_faiss_index()
+    add_document_chunks(new_chunks)
     persist_cases()
     return {
         "success": True,
@@ -561,83 +549,33 @@ def lookup_case(case_id: str) -> Optional[Dict[str, Any]]:
 
 
 def deduplicate_results(results: List[Dict[str, Any]], max_results: int = 4) -> List[Dict[str, Any]]:
-    unique_results = []
-    seen = set()
-    for item in results:
-        key = (item.get("source_type"), item.get("case_id"), item.get("page"), item.get("chunk_index"))
-        if key in seen:
-            continue
-        seen.add(key)
-        unique_results.append(item)
-        if len(unique_results) >= max_results:
-            break
-    return unique_results
+    return _dedupe_results(results, max_results=max_results)
 
 
 def search_indexed_docs(
     query: str,
     top_k: int = 3,
     case_ids: Optional[List[str]] = None,
+    diverse_cases: bool = False,
 ) -> List[Dict[str, Any]]:
-    pool = documents
-    if case_ids:
-        pool = [d for d in documents if d.get("case_id") in case_ids]
-    if not pool:
-        return []
-
-    texts = [build_document_search_text(doc) for doc in pool]
-    embeddings = embedding_model.encode(texts, convert_to_numpy=True).astype("float32")
-    dimension = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dimension)
-    index.add(embeddings)
-
-    query_embedding = embedding_model.encode([query], convert_to_numpy=True).astype("float32")
-    search_k = min(max(top_k * 2, top_k), len(pool))
-    distances, indexes = index.search(query_embedding, search_k)
-
-    results: List[Dict[str, Any]] = []
-    for rank, doc_index in enumerate(indexes[0], start=1):
-        if doc_index < 0:
-            continue
-        doc = pool[doc_index]
-        results.append({"rank": rank, "distance": float(distances[0][rank - 1]), **doc})
-    return deduplicate_results(results, max_results=top_k)
+    return search_documents(
+        query,
+        top_k=top_k,
+        case_ids=case_ids,
+        diverse_cases=diverse_cases,
+    )
 
 
-def search_indexed_docs_global(query: str, top_k: int = 3) -> List[Dict[str, Any]]:
-    """Search full FAISS index (all cases)."""
-    if faiss_index is None or not documents:
-        return []
-    query_embedding = embedding_model.encode([query], convert_to_numpy=True).astype("float32")
-    search_k = min(max(top_k * 4, top_k), len(documents))
-    distances, indexes = faiss_index.search(query_embedding, search_k)
-    results: List[Dict[str, Any]] = []
-    for rank, doc_index in enumerate(indexes[0], start=1):
-        if doc_index < 0:
-            continue
-        doc = documents[doc_index]
-        results.append({"rank": rank, "distance": float(distances[0][rank - 1]), **doc})
-    return deduplicate_results(results, max_results=top_k)
+def search_indexed_docs_global(
+    query: str,
+    top_k: int = 3,
+    diverse_cases: bool = False,
+) -> List[Dict[str, Any]]:
+    return search_documents(query, top_k=top_k, diverse_cases=diverse_cases)
 
 
 def search_temp_docs(query: str, temp_docs: List[Dict[str, Any]], top_k: int = 3) -> List[Dict[str, Any]]:
-    if not temp_docs:
-        return []
-    texts = [build_document_search_text(doc) for doc in temp_docs]
-    embeddings = embedding_model.encode(texts, convert_to_numpy=True)
-    dimension = embeddings.shape[1]
-    temp_index = faiss.IndexFlatL2(dimension)
-    temp_index.add(embeddings.astype("float32"))
-    query_embedding = embedding_model.encode([query], convert_to_numpy=True).astype("float32")
-    search_k = min(top_k, len(temp_docs))
-    distances, indexes = temp_index.search(query_embedding, search_k)
-    results: List[Dict[str, Any]] = []
-    for rank, doc_index in enumerate(indexes[0], start=1):
-        if doc_index < 0:
-            continue
-        doc = temp_docs[doc_index]
-        results.append({"rank": rank, "distance": float(distances[0][rank - 1]), **doc})
-    return results
+    return search_temp_documents(query, temp_docs, top_k=top_k)
 
 
 def process_chat_attachment_from_path(file_path: str, file_name: str) -> Tuple[List[Dict[str, Any]], str]:
@@ -694,46 +632,15 @@ def build_chat_history_text(history: List[Dict[str, str]], max_turns: int = 2) -
 
 
 def call_ollama(prompt: str, max_new_tokens: int = 350) -> str:
-    """Generate text using local Ollama (default: qwen2.5:1.5b)."""
-    try:
-        response = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.1, "num_predict": max_new_tokens},
-            },
-            timeout=180,
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("response", "").strip()
-    except requests.ConnectionError:
-        return (
-            "Error: Cannot connect to Ollama at http://localhost:11434. "
-            "Start Ollama and ensure the model is pulled:\n"
-            f"  ollama pull {OLLAMA_MODEL}"
-        )
-    except requests.RequestException as exc:
-        return f"Error calling Ollama API: {exc}"
+    return rag_llm.generate_text(prompt, max_new_tokens=max_new_tokens)
 
 
 def check_ollama() -> Dict[str, Any]:
-    """Quick Ollama connectivity check for health endpoint."""
-    try:
-        base = OLLAMA_URL.replace("/api/generate", "")
-        res = requests.get(f"{base}/api/tags", timeout=5)
-        res.raise_for_status()
-        models = [m.get("name", "") for m in res.json().get("models", [])]
-        has_model = any(OLLAMA_MODEL in m or m.startswith(OLLAMA_MODEL) for m in models)
-        return {"ok": True, "model": OLLAMA_MODEL, "model_available": has_model, "models": models}
-    except requests.RequestException as exc:
-        return {"ok": False, "model": OLLAMA_MODEL, "error": str(exc)}
+    return rag_llm.check_ollama()
 
 
 def generate_from_model(prompt: str, max_new_tokens: int = 350) -> str:
-    return call_ollama(prompt, max_new_tokens=max_new_tokens)
+    return rag_llm.generate_text(prompt, max_new_tokens=max_new_tokens)
 
 
 def get_dashboard_stats() -> Dict[str, int]:
@@ -791,6 +698,19 @@ def wants_case_content_answer(query: str) -> bool:
         "order", "disposed", "dismissed", "allowed", "petition",
     )
     return any(phrase in q for phrase in content_phrases) or len(q.split()) > 7
+
+
+def is_broad_legal_topic_query(query: str) -> bool:
+    """Cross-case legal topics — retrieve from multiple cases."""
+    if is_case_record_lookup(query) or is_judge_query(query):
+        return False
+    q = normalize_text(query)
+    terms = (
+        "right", "rights", "article", "constitutional", "fundamental",
+        "section", "precedent", "jurisprudence", "cases on", "law on",
+        "across cases", "multiple cases", "various cases",
+    )
+    return any(term in q for term in terms)
 
 
 def is_case_record_lookup(query: str) -> bool:
@@ -1021,11 +941,16 @@ Answer format:
     temp_results = search_temp_docs(user_question, temp_docs, top_k=3) if temp_docs else []
 
     if matched_case_ids and wants_case_content_answer(user_question):
-        indexed_results = search_indexed_docs(user_question, top_k=5, case_ids=matched_case_ids)
+        indexed_results = search_indexed_docs(
+            user_question, top_k=5, case_ids=matched_case_ids,
+        )
         if not indexed_results:
             indexed_results = search_indexed_docs_global(user_question, top_k=4)
     else:
-        indexed_results = search_indexed_docs_global(user_question, top_k=4)
+        broad = is_broad_legal_topic_query(user_question)
+        indexed_results = search_indexed_docs_global(
+            user_question, top_k=8 if broad else 4, diverse_cases=broad,
+        )
     if temp_results:
         results = temp_results + indexed_results[:1]
     else:
@@ -1073,6 +998,12 @@ Answer format:
 
     sources_text = build_sources_text(results)
     previous_chat = build_chat_history_text(history[:-1])
+    multi_case_note = ""
+    if is_broad_legal_topic_query(user_question):
+        multi_case_note = (
+            "- This is a cross-case legal topic: cite ALL relevant cases in the sources "
+            "(at least 3 different case IDs if available).\n"
+        )
     prompt = f"""
 You are an AI judicial research chat assistant.
 
@@ -1090,7 +1021,7 @@ Strict rules:
 - Always mention source type, title, case id, and page number.
 - Keep answer clear, detailed, and structured.
 - When the user asks for details about a named case, summarize facts, issues, and outcome from the sources.
-
+{multi_case_note}
 Previous conversation:
 {previous_chat if previous_chat else "No previous conversation."}
 

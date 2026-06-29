@@ -58,7 +58,7 @@ if [[ ! -f "$APP_DIR/.env" && -f "$APP_DIR/deploy/env.example" ]]; then
   echo "==> Created $APP_DIR/.env — edit CORS_ORIGINS and domain before going live"
 fi
 
-mkdir -p "$APP_DIR/data/fccp/pdfs" "$APP_DIR/.npm-cache" "$APP_DIR/.home" "$APP_DIR/.cache"
+mkdir -p "$APP_DIR/data/fccp/pdfs" "$APP_DIR/.npm-cache" "$APP_DIR/.home" "$APP_DIR/.cache" "$APP_DIR/data/chroma"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR/data" "$APP_DIR/.npm-cache" "$APP_DIR/.home" "$APP_DIR/.cache" 2>/dev/null || true
 
 echo "==> Install systemd service"

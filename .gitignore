@@ -27,6 +27,8 @@ data/lhc/manifest.json
 data/lhc/pdfs/*
 !data/lhc/pdfs/.gitkeep
 
+data/chroma/
+
 # Uploads & temp
 uploads/
 .gradio/

@@ -6,7 +6,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend import core
 from backend.scraper import lhc as lhc_scraper
 
 
@@ -18,6 +17,12 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="Max PDFs to download per run")
     args = parser.parse_args()
 
+    index_callback = None
+    if not args.metadata_only:
+        from backend import core
+
+        index_callback = core.index_lhc_judgment
+
     print("Starting LHC sync...")
     result = lhc_scraper.sync_lhc_judgments(
         year=args.year,
@@ -25,7 +30,7 @@ def main():
         metadata_only=args.metadata_only,
         auto_index=not args.metadata_only,
         download_limit=None if args.metadata_only else args.limit,
-        index_callback=core.index_lhc_judgment,
+        index_callback=index_callback,
     )
     print(result)
 

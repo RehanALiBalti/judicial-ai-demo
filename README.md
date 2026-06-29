@@ -87,22 +87,21 @@ python scripts/run_lhc_sync.py --metadata-only
 python scripts/run_lhc_sync.py --limit 50
 ```
 
-## LLM: Ollama `qwen2.5:1.5b`
+## LLM: Ollama `qwen2.5:1.5b` + LangChain RAG
 
-Chat answers use your **local Ollama** install (same as `app-1.py`):
+Chat uses **LangChain** with **Chroma** (persisted at `data/chroma/`) and **MMR retrieval** for multi-case answers. LLM via **Ollama**.
 
 ```powershell
 ollama pull qwen2.5:1.5b
 ollama serve
 ```
 
-Then start the Python backend. Verify at `http://127.0.0.1:8000/api/health`.
-
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model name |
-| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama generate API |
-| `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Search embeddings |
+| `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API |
+| `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Embeddings |
+| `CHROMA_DIR` | `data/chroma` | Vector index on disk |
 
 ## Notes
 

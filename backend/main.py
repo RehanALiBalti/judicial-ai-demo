@@ -62,6 +62,7 @@ def health():
     return {
         "status": "ok",
         "service": "jams-api",
+        "rag": "langchain-chroma-mmr",
         "llm": "ollama",
         "ollama_model": core.OLLAMA_MODEL,
         "ollama": ollama,

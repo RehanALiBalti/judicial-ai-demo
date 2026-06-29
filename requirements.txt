@@ -10,5 +10,14 @@ python-multipart>=0.0.9
 beautifulsoup4>=4.12.0
 lxml>=5.0.0
 
+# LangChain RAG (Chroma + MMR retrieval + Ollama)
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+langchain-core>=0.3.0
+chromadb>=0.5.0
+langchain-huggingface>=0.1.0
+langchain-chroma>=0.2.0
+
 # LLM: Ollama (qwen2.5:1.5b) — install Ollama separately, not via pip
-# Embeddings use sentence-transformers (pulls torch as dependency)
+# Embeddings: HuggingFace via LangChain (sentence-transformers)
