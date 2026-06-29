@@ -127,6 +127,7 @@ body {
 /* Tabs */
 .tab-bar {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   background: var(--navy);
   padding: 6px;
@@ -135,7 +136,8 @@ body {
 }
 
 .tab-btn {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 100px;
   border: none;
   background: transparent;
   color: #94a3b8;
