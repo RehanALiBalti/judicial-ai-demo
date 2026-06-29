@@ -59,6 +59,14 @@ def _slugify(text: str, max_len: int = 72) -> str:
     return slug[:max_len] or "judgment"
 
 
+def normalize_pdf_url(pdf_url: str) -> str:
+    """sys.lhc.gov.pk serves PDFs over HTTP only; HTTPS causes SSL errors."""
+    url = (pdf_url or "").strip()
+    if url.startswith("https://sys.lhc.gov.pk/"):
+        return "http://" + url[len("https://") :]
+    return url
+
+
 def stable_pdf_filename(pdf_url: str) -> str:
     name = Path(pdf_url).name
     if name.lower().endswith(".pdf"):
@@ -99,7 +107,7 @@ def parse_approved_judgments_html(html: str) -> List[Dict[str, Any]]:
         if not link or ".pdf" not in (link.get("href") or "").lower():
             continue
 
-        pdf_url = link["href"].strip()
+        pdf_url = normalize_pdf_url(link["href"].strip())
         case_number = tds[1].get_text(" ", strip=True)
         title = tds[2].get_text(" ", strip=True)
         author_judge = tds[3].get_text(" ", strip=True)
@@ -175,8 +183,9 @@ def fetch_judgments(
 
 
 def download_pdf(pdf_url: str, dest_path: str) -> bool:
+    pdf_url = normalize_pdf_url(pdf_url)
     session = _session()
-    resp = session.get(pdf_url, timeout=180, stream=True)
+    resp = session.get(pdf_url, timeout=(15, 180), stream=True)
     resp.raise_for_status()
     data = resp.content
     if not data:
@@ -235,9 +244,9 @@ def sync_lhc_judgments(
     )
 
     if use_local_manifest:
-        items = list(existing.values())
+        items = [i for i in existing.values() if not resolve_local_pdf(i) and i.get("pdf_url")]
         session_report["total_reported"] = manifest.get("total_reported")
-        _progress(f"Using local manifest ({len(items)} items), skipping API fetch")
+        _progress(f"Using local manifest — {len(items)} PDF(s) pending download")
     else:
         try:
             _progress("Fetching judgment list from LHC…")
@@ -294,8 +303,10 @@ def sync_lhc_judgments(
 
         filename = stable_pdf_filename(item["pdf_url"])
         pdf_path = str(LHC_PDF_DIR / filename)
+        pdf_url = normalize_pdf_url(item["pdf_url"])
         try:
-            ok = download_pdf(item["pdf_url"], pdf_path)
+            _progress(f"Downloading {session_report['downloaded'] + 1}/{download_limit or '?'}: {item.get('case_title', '')[:50]}…")
+            ok = download_pdf(pdf_url, pdf_path)
             if not ok:
                 session_report["failed"].append({
                     "title": item.get("case_title"),
@@ -316,6 +327,7 @@ def sync_lhc_judgments(
         record.update({
             "pdf_path": pdf_path,
             "file_name": filename,
+            "pdf_url": pdf_url,
             "indexed": False,
             "case_id": None,
             "scraped_at": datetime.now(timezone.utc).isoformat(),
