@@ -37,6 +37,7 @@ async def save_upload(upload: UploadFile) -> tuple[str, str]:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    core.start_vector_index_sync()
     yield
 
 
@@ -66,6 +67,7 @@ def health():
         "llm": "ollama",
         "ollama_model": core.OLLAMA_MODEL,
         "ollama": ollama,
+        "vector_index": core.get_vector_index_status(),
     }
 
 

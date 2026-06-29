@@ -30,6 +30,8 @@ from backend.rag.vectorstore import (
 
 cases: List[Dict[str, Any]] = []
 documents: List[Dict[str, Any]] = []
+vector_index_ready = False
+vector_index_error: Optional[str] = None
 
 EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -40,8 +42,11 @@ def _configure_runtime_cache() -> None:
     """Use writable cache under the app dir (www-data cannot write /var/www/.cache)."""
     app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     cache_root = os.getenv("JAMS_CACHE_DIR", os.path.join(app_root, ".cache"))
+    chroma_dir = os.getenv("CHROMA_DIR", os.path.join(app_root, "data", "chroma"))
     home = os.getenv("HOME", os.path.join(app_root, ".home"))
     os.environ.setdefault("HOME", home)
+    os.environ.setdefault("CHROMA_DIR", chroma_dir)
+    os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
     os.environ.setdefault("XDG_CACHE_HOME", cache_root)
     os.environ.setdefault("HF_HOME", os.path.join(cache_root, "huggingface"))
     os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(cache_root, "huggingface"))
@@ -50,6 +55,7 @@ def _configure_runtime_cache() -> None:
     for path in {
         home,
         cache_root,
+        chroma_dir,
         os.environ["HF_HOME"],
         os.environ["TORCH_HOME"],
         os.environ["SENTENCE_TRANSFORMERS_HOME"],
@@ -249,6 +255,37 @@ def rebuild_faiss_index() -> None:
     sync_vectorstore(documents)
 
 
+def start_vector_index_sync() -> None:
+    """Build Chroma index in background so API can start immediately."""
+    import threading
+
+    global vector_index_ready, vector_index_error
+
+    def _run() -> None:
+        global vector_index_ready, vector_index_error
+        try:
+            if not documents:
+                vector_index_ready = True
+                return
+            print(f"Building Chroma index ({len(documents)} chunks)…")
+            sync_vectorstore(documents)
+            vector_index_ready = True
+            print(f"Chroma index ready ({len(documents)} chunks)")
+        except Exception as exc:
+            vector_index_error = str(exc)
+            print(f"Chroma sync failed: {exc}")
+
+    threading.Thread(target=_run, daemon=True, name="chroma-sync").start()
+
+
+def get_vector_index_status() -> Dict[str, Any]:
+    return {
+        "ready": vector_index_ready,
+        "error": vector_index_error,
+        "chunks": len(documents),
+    }
+
+
 def validate_case_upload(file_path: Optional[str], case_title: str, court_name: str, decision_date: str) -> List[str]:
     errors: List[str] = []
     if not file_path:
@@ -381,7 +418,6 @@ def load_persisted_cases() -> int:
     store = load_store()
     cases = store.get("cases", [])
     documents = store.get("documents", [])
-    rebuild_faiss_index()
     return len(cases)
 
 

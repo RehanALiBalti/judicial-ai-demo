@@ -15,12 +15,13 @@ Environment=HF_HOME=/opt/jams/.cache/huggingface
 Environment=TRANSFORMERS_CACHE=/opt/jams/.cache/huggingface
 Environment=TORCH_HOME=/opt/jams/.cache/torch
 Environment=SENTENCE_TRANSFORMERS_HOME=/opt/jams/.cache/sentence_transformers
+Environment=CHROMA_DIR=/opt/jams/data/chroma
+Environment=ANONYMIZED_TELEMETRY=False
 ExecStart=/opt/jams/.venv/bin/uvicorn backend.main:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 StartLimitIntervalSec=0
-# Embeddings + FAISS are in-memory; use a single worker
-TimeoutStartSec=300
+TimeoutStartSec=120
 
 [Install]
 WantedBy=multi-user.target
