@@ -9,8 +9,8 @@ import { fetchStats } from "./api/client";
 
 const TABS = [
   { id: "chat", label: "AI Chat", icon: "💬" },
-  { id: "fccp", label: "FCCP Import", icon: "⚖️" },
-  { id: "lhc", label: "LHC Import", icon: "🏛️" },
+  { id: "fccp", label: "FCCP Judgments", icon: "⚖️" },
+  { id: "lhc", label: "LHC Judgments", icon: "🏛️" },
   { id: "upload", label: "Upload Case", icon: "📤" },
   { id: "cases", label: "Indexed Cases", icon: "📁" },
 ];
