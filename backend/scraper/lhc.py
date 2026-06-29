@@ -36,12 +36,21 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
-REQUEST_HEADERS = {"User-Agent": USER_AGENT}
+REQUEST_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": PAGE_URL,
+}
 
 
 def _session() -> requests.Session:
     s = requests.Session()
     s.headers.update(REQUEST_HEADERS)
+    try:
+        s.get(PAGE_URL, timeout=30)
+    except requests.RequestException:
+        pass
     return s
 
 
@@ -151,11 +160,17 @@ def fetch_judgments(
     }
     url = f"{API_URL}?{urlencode(params)}"
     session = _session()
-    resp = session.get(url, timeout=300)
+    resp = session.get(url, timeout=(30, 300))
     resp.raise_for_status()
     html = resp.text
     total = parse_total_count(html)
     items = parse_approved_judgments_html(html)
+    if not items:
+        preview = re.sub(r"\s+", " ", html[:400]).strip()
+        raise RuntimeError(
+            f"LHC returned no judgments ({len(html)} bytes). "
+            f"The server may be blocked from data.lhc.gov.pk. Preview: {preview[:200]}"
+        )
     return url, items, total
 
 

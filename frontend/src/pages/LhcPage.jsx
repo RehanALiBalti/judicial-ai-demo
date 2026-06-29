@@ -60,14 +60,27 @@ export default function LhcPage({ onSynced }) {
       setSyncing(false);
       onSynced?.();
       const r = status.last_sync_result;
-      if (r.error) {
-        setAlert({ type: "error", title: "Sync Error", message: r.error });
+      const fail = r.failed?.[0];
+      if (r.error || fail) {
+        const msg = r.error || fail.error || "Sync failed";
+        const title =
+          fail?.stage === "fetch" ? "Cannot reach LHC site" : "Sync Error";
+        setAlert({ type: "error", title, message: msg });
       } else if (r.metadata_only) {
-        setAlert({
-          type: "success",
-          title: "Metadata Saved",
-          message: `Listed ${r.scraped} judgments (site total: ${r.total_reported ?? "?"}).`,
-        });
+        if (!r.scraped) {
+          setAlert({
+            type: "error",
+            title: "No judgments listed",
+            message:
+              "LHC returned an empty list. If this server cannot reach data.lhc.gov.pk, run metadata sync on your PC and copy data/lhc/ to the server.",
+          });
+        } else {
+          setAlert({
+            type: "success",
+            title: "Metadata Saved",
+            message: `Listed ${r.scraped} judgments (site total: ${r.total_reported ?? "?"}).`,
+          });
+        }
       } else {
         setAlert({
           type: "success",
