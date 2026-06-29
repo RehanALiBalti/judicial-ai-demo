@@ -197,14 +197,21 @@ def sync_lhc_judgments(
     auto_index: bool = True,
     download_limit: Optional[int] = 50,
     delay_seconds: float = 0.5,
+    refresh_metadata: bool = True,
     index_callback: Optional[Callable[[str, Dict[str, Any]], Dict[str, Any]]] = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """
     Scrape LHC approved judgments list, optionally download PDFs and index.
 
     - metadata_only=True: fetch all ~4683 rows into manifest (no PDF download)
     - download_limit: max new PDFs per run (None = all pending in manifest)
+    - refresh_metadata=False: use local manifest only (skip slow API refetch)
     """
+    def _progress(msg: str) -> None:
+        if progress_callback:
+            progress_callback(msg)
+
     ensure_data_dirs()
     manifest = load_lhc_manifest()
     existing = {lhc_manifest_item_key(i): i for i in manifest.get("items", [])}
@@ -221,13 +228,26 @@ def sync_lhc_judgments(
         "api_url": None,
     }
 
-    try:
-        api_url, items, total = fetch_judgments(year=year, court_name=court_name)
-        session_report["api_url"] = api_url
-        session_report["total_reported"] = total
-    except Exception as exc:
-        session_report["failed"].append({"stage": "fetch", "error": str(exc)})
-        return session_report
+    use_local_manifest = (
+        not metadata_only
+        and not refresh_metadata
+        and bool(existing)
+    )
+
+    if use_local_manifest:
+        items = list(existing.values())
+        session_report["total_reported"] = manifest.get("total_reported")
+        _progress(f"Using local manifest ({len(items)} items), skipping API fetch")
+    else:
+        try:
+            _progress("Fetching judgment list from LHC…")
+            api_url, items, total = fetch_judgments(year=year, court_name=court_name)
+            session_report["api_url"] = api_url
+            session_report["total_reported"] = total
+            _progress(f"Listed {len(items)} judgments from site")
+        except Exception as exc:
+            session_report["failed"].append({"stage": "fetch", "error": str(exc)})
+            return session_report
 
     for item in items:
         session_report["scraped"] += 1
@@ -284,6 +304,10 @@ def sync_lhc_judgments(
                 existing[key] = record
                 continue
             session_report["downloaded"] += 1
+            _progress(
+                f"Downloaded {session_report['downloaded']}/{download_limit or '?'}: "
+                f"{item.get('case_title', '')[:60]}"
+            )
         except Exception as exc:
             session_report["failed"].append({"title": item.get("case_title"), "error": str(exc)})
             existing[key] = record
