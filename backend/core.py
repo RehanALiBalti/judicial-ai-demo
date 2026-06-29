@@ -311,6 +311,27 @@ def upload_case_from_path(
                 }
         extra_meta["source_id"] = stable_key
 
+    if extra_meta.get("source") == "lhc":
+        from backend.persistence import lhc_manifest_item_key
+
+        stable_key = extra_meta.get("source_id") or lhc_manifest_item_key({
+            "pdf_url": extra_meta.get("pdf_url"),
+            "lhc_citation": extra_meta.get("lhc_citation"),
+            "case_number": case_title,
+        })
+        for existing in cases:
+            if existing.get("source") != "lhc":
+                continue
+            if existing.get("source_id") == stable_key:
+                return {
+                    "success": True,
+                    "message": f"Already indexed: {existing.get('title')}",
+                    "case_id": existing.get("case_id"),
+                    "pages": existing.get("pages"),
+                    "chunks": 0,
+                }
+        extra_meta["source_id"] = stable_key
+
     errors = validate_case_upload(file_path, case_title, court_name, decision_date)
     if errors:
         return {"success": False, "message": " ".join(errors)}
@@ -390,6 +411,27 @@ def index_fccp_judgment(pdf_path: str, meta: Dict[str, Any]) -> Dict[str, Any]:
             "author_judge": meta.get("author_judge"),
             "download_url": meta.get("download_url"),
             "upload_date": meta.get("upload_date"),
+            "pdf_path": pdf_path,
+        },
+    )
+
+
+def index_lhc_judgment(pdf_path: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Index a scraped LHC judgment PDF into the JAMS dataset."""
+    return upload_case_from_path(
+        file_path=pdf_path,
+        file_name=meta.get("file_name") or os.path.basename(pdf_path),
+        case_title=meta.get("case_title", "LHC Judgment"),
+        court_name=meta.get("court", "Lahore High Court, Lahore"),
+        decision_date=meta.get("decision_date", "2026-01-01"),
+        extra_meta={
+            "source": "lhc",
+            "source_id": meta.get("source_id"),
+            "author_judge": meta.get("author_judge"),
+            "pdf_url": meta.get("pdf_url"),
+            "lhc_citation": meta.get("lhc_citation"),
+            "case_number": meta.get("case_number"),
+            "tag_line": meta.get("tag_line"),
             "pdf_path": pdf_path,
         },
     )

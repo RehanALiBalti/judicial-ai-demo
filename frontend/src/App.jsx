@@ -4,11 +4,13 @@ import ChatPage from "./pages/ChatPage";
 import UploadPage from "./pages/UploadPage";
 import CasesPage from "./pages/CasesPage";
 import FccpPage from "./pages/FccpPage";
+import LhcPage from "./pages/LhcPage";
 import { fetchStats } from "./api/client";
 
 const TABS = [
   { id: "chat", label: "AI Chat", icon: "💬" },
   { id: "fccp", label: "FCCP Import", icon: "⚖️" },
+  { id: "lhc", label: "LHC Import", icon: "🏛️" },
   { id: "upload", label: "Upload Case", icon: "📤" },
   { id: "cases", label: "Indexed Cases", icon: "📁" },
 ];
@@ -52,6 +54,9 @@ export default function App() {
         </div>
         <div className={`tab-panel ${tab === "fccp" ? "is-active" : ""}`} hidden={tab !== "fccp"}>
           <FccpPage onSynced={refreshStats} />
+        </div>
+        <div className={`tab-panel ${tab === "lhc" ? "is-active" : ""}`} hidden={tab !== "lhc"}>
+          <LhcPage onSynced={refreshStats} />
         </div>
         <div className={`tab-panel ${tab === "upload" ? "is-active" : ""}`} hidden={tab !== "upload"}>
           <UploadPage onUploaded={refreshStats} />

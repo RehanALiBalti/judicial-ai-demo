@@ -67,3 +67,28 @@ export async function startFccpSync({ startPage = 1, endPage } = {}) {
   });
   return handleResponse(res);
 }
+
+export async function fetchLhcStatus() {
+  const res = await fetch(`${API_BASE}/api/scraper/lhc/status`);
+  return handleResponse(res);
+}
+
+export async function startLhcSync({
+  year = "",
+  courtName = "All Courts",
+  metadataOnly = false,
+  downloadLimit = 50,
+} = {}) {
+  const params = new URLSearchParams({
+    court_name: courtName,
+    metadata_only: String(metadataOnly),
+  });
+  if (year) params.set("year", year);
+  if (!metadataOnly && downloadLimit != null) {
+    params.set("download_limit", String(downloadLimit));
+  }
+  const res = await fetch(`${API_BASE}/api/scraper/lhc/sync?${params}`, {
+    method: "POST",
+  });
+  return handleResponse(res);
+}

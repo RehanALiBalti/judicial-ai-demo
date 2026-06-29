@@ -13,8 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend import core
 from backend.scraper import fccp as fccp_scraper
+from backend.scraper import lhc as lhc_scraper
 
 _sync_status: Dict[str, Any] = {"running": False, "last_result": None}
+_lhc_sync_status: Dict[str, Any] = {"running": False, "last_result": None}
 
 CORS_ORIGINS = os.getenv(
     "CORS_ORIGINS",
@@ -150,6 +152,62 @@ def fccp_sync(
         "message": "FCCP sync started in background.",
         "start_page": start_page,
         "end_page": end_page,
+    }
+
+
+def _run_lhc_sync(
+    year: str,
+    court_name: str,
+    metadata_only: bool,
+    download_limit: Optional[int],
+) -> None:
+    global _lhc_sync_status
+    try:
+        result = lhc_scraper.sync_lhc_judgments(
+            year=year,
+            court_name=court_name,
+            metadata_only=metadata_only,
+            auto_index=not metadata_only,
+            download_limit=download_limit,
+            index_callback=core.index_lhc_judgment,
+        )
+        result["stats"] = core.get_dashboard_stats()
+        _lhc_sync_status["last_result"] = result
+    except Exception as exc:
+        _lhc_sync_status["last_result"] = {"error": str(exc)}
+    finally:
+        _lhc_sync_status["running"] = False
+
+
+@app.get("/api/scraper/lhc/status")
+def lhc_status():
+    status = lhc_scraper.get_lhc_status()
+    status["sync_running"] = _lhc_sync_status["running"]
+    status["last_sync_result"] = _lhc_sync_status.get("last_result")
+    status["stats"] = core.get_dashboard_stats()
+    return status
+
+
+@app.post("/api/scraper/lhc/sync")
+def lhc_sync(
+    background_tasks: BackgroundTasks,
+    year: str = "",
+    court_name: str = "All Courts",
+    metadata_only: bool = False,
+    download_limit: Optional[int] = 50,
+):
+    if _lhc_sync_status["running"]:
+        return {"success": False, "message": "LHC sync already running."}
+    _lhc_sync_status["running"] = True
+    _lhc_sync_status["last_result"] = None
+    background_tasks.add_task(_run_lhc_sync, year, court_name, metadata_only, download_limit)
+    return {
+        "success": True,
+        "message": "LHC sync started in background.",
+        "metadata_only": metadata_only,
+        "download_limit": download_limit,
+        "court_name": court_name,
+        "year": year or "Any",
     }
 
 

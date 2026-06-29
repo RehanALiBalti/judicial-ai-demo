@@ -53,6 +53,8 @@ UI runs at **http://localhost:5173** (proxies `/api` to backend)
 | POST | `/api/chat` | Chat with optional PDF |
 | GET | `/api/scraper/fccp/status` | FCCP scrape manifest & stats |
 | POST | `/api/scraper/fccp/sync` | Download & index FCCP judgments |
+| GET | `/api/scraper/lhc/status` | LHC scrape manifest & stats |
+| POST | `/api/scraper/lhc/sync` | Fetch metadata / download LHC judgments |
 
 ## FCCP Judgments Scraper
 
@@ -68,6 +70,21 @@ Imports cases from [Federal Constitutional Court of Pakistan — Judgments](http
 **From CLI:**
 ```powershell
 python scripts/run_fccp_sync.py --start 1 --end 5
+```
+
+## LHC Judgments Scraper
+
+Imports **Judgments Approved for Reporting** from [Lahore High Court](https://data.lhc.gov.pk/reported_judgments/judgments_approved_for_reporting) (~4683 with filter **All Courts**):
+
+1. **Step 1 — Metadata:** one API call lists all judgments (title, judge, citation, PDF URL, tag line)
+2. **Step 2 — Batch download:** PDFs saved to `data/lhc/pdfs/` and indexed for chat (50 per batch by default)
+
+**From UI:** **LHC Import** tab → **Fetch All Metadata** → **Download & Index Batch**
+
+**From CLI:**
+```powershell
+python scripts/run_lhc_sync.py --metadata-only
+python scripts/run_lhc_sync.py --limit 50
 ```
 
 ## LLM: Ollama `qwen2.5:1.5b`
