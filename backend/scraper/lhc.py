@@ -244,9 +244,16 @@ def sync_lhc_judgments(
     )
 
     if use_local_manifest:
-        items = [i for i in existing.values() if not resolve_local_pdf(i) and i.get("pdf_url")]
+        if auto_index and not metadata_only:
+            items = [
+                i for i in existing.values()
+                if resolve_local_pdf(i) and not i.get("indexed") and i.get("pdf_url")
+            ]
+            _progress(f"Index-only — {len(items)} PDF(s) waiting to index")
+        else:
+            items = [i for i in existing.values() if not resolve_local_pdf(i) and i.get("pdf_url")]
+            _progress(f"Using local manifest — {len(items)} PDF(s) pending download")
         session_report["total_reported"] = manifest.get("total_reported")
-        _progress(f"Using local manifest — {len(items)} PDF(s) pending download")
     else:
         try:
             _progress("Fetching judgment list from LHC…")
@@ -280,10 +287,12 @@ def sync_lhc_judgments(
                 existing[key] = record
                 continue
             if auto_index and index_callback and not record.get("indexed"):
-                if download_limit is not None and session_report["downloaded"] + session_report["indexed"] >= download_limit:
+                cap = download_limit
+                if cap is not None and session_report["indexed"] >= cap:
                     existing[key] = record
                     continue
                 try:
+                    _progress(f"Indexing {session_report['indexed'] + 1}/{cap or '?'}: {item.get('case_title', '')[:50]}…")
                     result = index_callback(local_pdf, record)
                     if result.get("success"):
                         record["indexed"] = True
