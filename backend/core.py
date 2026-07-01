@@ -20,6 +20,7 @@ from backend.rag.vectorstore import (
     build_document_search_text,
     deduplicate_results as _dedupe_results,
     diversify_by_case,
+    diversify_by_court,
     search_documents,
     search_temp_documents,
     sync_vectorstore,
@@ -738,6 +739,46 @@ Text: {item.get('text', '')[:max_chars_per_source]}
     return sources_text.strip()
 
 
+def format_topic_case_cards(results: List[Dict[str, Any]], max_chars: int = 500) -> str:
+    """Full source cards for topic queries — not truncated by LLM token limit."""
+    if not results:
+        return ""
+    lines = []
+    for idx, item in enumerate(results, start=1):
+        text = (item.get("text") or "").strip()
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "…"
+        lines.append(
+            f"### Source {idx}\n"
+            f"- **Case ID:** {item.get('case_id')}\n"
+            f"- **Title:** {item.get('title')}\n"
+            f"- **Court:** {item.get('court') or 'N/A'}\n"
+            f"- **Decision Date:** {item.get('decision_date') or 'N/A'}\n"
+            f"- **Page:** {item.get('page')}\n"
+            f"- **Text:** {text}\n"
+        )
+    return "\n".join(lines)
+
+
+def search_indexed_docs_balanced_courts(query: str, top_k: int = 6) -> List[Dict[str, Any]]:
+    """Retrieve topic matches from multiple courts (FCCP + LHC when indexed)."""
+    raw = search_documents(query, top_k=min(top_k * 5, 30), diverse_cases=False)
+    if not raw:
+        return []
+    by_case: List[Dict[str, Any]] = []
+    seen = set()
+    for item in raw:
+        key = item.get("case_id")
+        if key in seen:
+            continue
+        seen.add(key)
+        by_case.append(item)
+    balanced = diversify_by_court(by_case, max_results=top_k, min_per_bucket=2)
+    for rank, item in enumerate(balanced, start=1):
+        item["rank"] = rank
+    return balanced
+
+
 def build_chat_history_text(history: List[Dict[str, str]], max_turns: int = 2) -> str:
     if not history:
         return ""
@@ -1105,10 +1146,17 @@ Answer format:
         if not indexed_results:
             indexed_results = search_indexed_docs_global(user_question, top_k=4)
     else:
-        broad = is_broad_legal_topic_query(user_question)
-        indexed_results = search_indexed_docs_global(
-            user_question, top_k=8 if broad else 4, diverse_cases=broad,
-        )
+        broad = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
+        if broad:
+            indexed_results = search_indexed_docs_balanced_courts(user_question, top_k=6)
+            if not indexed_results:
+                indexed_results = search_indexed_docs_global(
+                    user_question, top_k=8, diverse_cases=True,
+                )
+        else:
+            indexed_results = search_indexed_docs_global(
+                user_question, top_k=4, diverse_cases=False,
+            )
     if temp_results:
         results = temp_results + indexed_results[:1]
     else:
@@ -1166,12 +1214,36 @@ Answer format:
     sources_text = build_sources_text(results)
     previous_chat = build_chat_history_text(history[:-1])
     multi_case_note = ""
+    topic_listing = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
     if is_broad_legal_topic_query(user_question):
         multi_case_note = (
             "- This is a cross-case legal topic: cite ALL relevant cases in the sources "
-            "(at least 3 different case IDs if available).\n"
+            "(include both FCCP and Lahore High Court when present).\n"
         )
-    prompt = f"""
+    if topic_listing:
+        prompt = f"""
+You are an AI judicial research chat assistant.
+
+The user asked for cases on a legal topic. Write a brief 2-3 sentence introduction only.
+Do NOT list sources yourself — full source cards are appended after your text.
+Mention how many cases were found and which courts (FCCP / LHC) appear in the results.
+Do not invent cases.
+
+User question: {user_question}
+
+Number of sources: {len(results)}
+Courts in results: {", ".join(sorted({(r.get("court") or "N/A") for r in results}))}
+
+Brief introduction:"""
+        try:
+            intro = generate_from_model(prompt, max_new_tokens=120).strip()
+        except Exception:
+            intro = f"Here are **{len(results)}** case(s) from indexed sources matching your topic:"
+        if intro.startswith("Error"):
+            intro = f"Here are **{len(results)}** case(s) from indexed sources matching your topic:"
+        assistant_answer = intro + "\n\n" + format_topic_case_cards(results)
+    else:
+        prompt = f"""
 You are an AI judicial research chat assistant.
 
 CRITICAL:
@@ -1204,10 +1276,10 @@ Answer format:
 3. Reasoning
 4. Source References
 """
-    try:
-        assistant_answer = generate_from_model(prompt, max_new_tokens=500)
-    except Exception as error:
-        assistant_answer = f"AI generation failed: {str(error)}"
+        try:
+            assistant_answer = generate_from_model(prompt, max_new_tokens=500)
+        except Exception as error:
+            assistant_answer = f"AI generation failed: {str(error)}"
 
     if attachment_notice:
         assistant_answer = f"**Attachment processed:** {attachment_notice}\n\n{assistant_answer}"

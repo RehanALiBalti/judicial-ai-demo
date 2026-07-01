@@ -133,7 +133,6 @@ def add_document_chunks(chunks: List[Dict[str, Any]]) -> None:
 
 
 def diversify_by_case(results: List[Dict[str, Any]], max_results: int) -> List[Dict[str, Any]]:
-    """Spread results across multiple cases (round-robin)."""
     if not results:
         return []
     buckets: Dict[str, List[Dict[str, Any]]] = {}
@@ -154,6 +153,50 @@ def diversify_by_case(results: List[Dict[str, Any]], max_results: int) -> List[D
             if not buckets.get(cid):
                 case_ids.remove(cid)
     return diverse[:max_results]
+
+
+def _court_bucket(court: str) -> str:
+    c = (court or "").lower()
+    if "lahore high" in c:
+        return "lhc"
+    if "federal constitutional" in c or "fccp" in c:
+        return "fccp"
+    return "other"
+
+
+def diversify_by_court(
+    results: List[Dict[str, Any]],
+    max_results: int,
+    min_per_bucket: int = 2,
+) -> List[Dict[str, Any]]:
+    """Prefer results from both LHC and FCCP when both appear in the candidate set."""
+    if not results:
+        return []
+    buckets: Dict[str, List[Dict[str, Any]]] = {"fccp": [], "lhc": [], "other": []}
+    for item in results:
+        buckets[_court_bucket(str(item.get("court") or ""))].append(item)
+
+    picked: List[Dict[str, Any]] = []
+    seen_cases = set()
+    for key in ("fccp", "lhc", "other"):
+        for item in buckets[key][:min_per_bucket]:
+            cid = item.get("case_id")
+            if cid in seen_cases:
+                continue
+            picked.append(item)
+            seen_cases.add(cid)
+            if len(picked) >= max_results:
+                return picked[:max_results]
+
+    for item in results:
+        if len(picked) >= max_results:
+            break
+        cid = item.get("case_id")
+        if cid in seen_cases:
+            continue
+        picked.append(item)
+        seen_cases.add(cid)
+    return picked[:max_results]
 
 
 def deduplicate_results(results: List[Dict[str, Any]], max_results: int = 6) -> List[Dict[str, Any]]:
