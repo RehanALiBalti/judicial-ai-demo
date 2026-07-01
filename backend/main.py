@@ -8,8 +8,11 @@ import tempfile
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
+import traceback
+
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend import core
 from backend.scraper import fccp as fccp_scraper
@@ -239,6 +242,17 @@ async def chat_endpoint(
         )
         result["stats"] = core.get_dashboard_stats()
         return result
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": f"Chat failed: {exc}",
+                "history": parsed_history,
+                "temp_docs": parsed_temp_docs,
+            },
+        )
     finally:
         if pdf_path:
             try:

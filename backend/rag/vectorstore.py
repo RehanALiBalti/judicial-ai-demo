@@ -114,7 +114,10 @@ def rebuild_from_documents(documents: List[Dict[str, Any]]) -> None:
 def sync_vectorstore(documents: List[Dict[str, Any]]) -> None:
     """Rebuild Chroma if empty or out of sync with in-memory document list."""
     if not documents:
-        reset_vectorstore()
+        try:
+            reset_vectorstore()
+        except Exception:
+            pass
         return
     vs = get_vectorstore()
     try:
@@ -123,7 +126,15 @@ def sync_vectorstore(documents: List[Dict[str, Any]]) -> None:
         count = 0
     if count == len(documents):
         return
-    rebuild_from_documents(documents)
+    # Keep an existing index on read-only deploys (git-lfs chroma owned by root).
+    if count > 0:
+        return
+    try:
+        rebuild_from_documents(documents)
+    except Exception as exc:
+        if "readonly" in str(exc).lower() and count > 0:
+            return
+        raise
 
 
 def add_document_chunks(chunks: List[Dict[str, Any]]) -> None:
@@ -226,7 +237,10 @@ def search_documents(
 ) -> List[Dict[str, Any]]:
     if not query.strip():
         return []
-    vs = get_vectorstore()
+    try:
+        vs = get_vectorstore()
+    except Exception:
+        return []
     try:
         if vs._collection.count() == 0:
             return []
@@ -235,28 +249,32 @@ def search_documents(
 
     fetch_k = min(max(top_k * 5, 20), 80)
 
-    if case_ids:
-        # Filtered similarity search per case subset
-        filter_expr: Dict[str, Any]
-        if len(case_ids) == 1:
-            filter_expr = {"case_id": case_ids[0]}
+    try:
+        if case_ids:
+            # Filtered similarity search per case subset
+            filter_expr: Dict[str, Any]
+            if len(case_ids) == 1:
+                filter_expr = {"case_id": case_ids[0]}
+            else:
+                filter_expr = {"case_id": {"$in": case_ids}}
+            retriever = vs.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": fetch_k, "filter": filter_expr},
+            )
         else:
-            filter_expr = {"case_id": {"$in": case_ids}}
-        retriever = vs.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": fetch_k, "filter": filter_expr},
-        )
-    else:
-        retriever = vs.as_retriever(
-            search_type="mmr",
-            search_kwargs={
-                "k": fetch_k,
-                "fetch_k": min(fetch_k * 4, 120),
-                "lambda_mult": 0.55,
-            },
-        )
+            retriever = vs.as_retriever(
+                search_type="mmr",
+                search_kwargs={
+                    "k": fetch_k,
+                    "fetch_k": min(fetch_k * 4, 120),
+                    "lambda_mult": 0.55,
+                },
+            )
 
-    lc_docs = retriever.invoke(query)
+        lc_docs = retriever.invoke(query)
+    except Exception:
+        return []
+
     results = [langchain_to_result(d, rank) for rank, d in enumerate(lc_docs, start=1)]
 
     if diverse_cases and not case_ids:

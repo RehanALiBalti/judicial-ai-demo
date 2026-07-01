@@ -1323,8 +1323,39 @@ def is_conversational_query(query: str) -> bool:
         r"^who are you[?.!\s]*$",
         r"^what can you do[?.!\s]*$",
         r"^how (does|do) (this|jams) work[?.!\s]*$",
+        r"^how are (you|u)\b",
+        r"^how r u\b",
+        r"^how s it going\b",
+        r"^how have you been\b",
+        r"^what s up\b",
+        r"^whats up\b",
+        r"^sup\b",
+        r"^nice to meet",
+        r"^good to see",
+        r"^kaise ho\b",
+        r"^kya hal\b",
+        r"^theek ho\b",
+        r"^ap kaise\b",
+        r"^aap kaise\b",
     ]
-    return any(re.match(p, q, re.IGNORECASE) for p in patterns)
+    if any(re.match(p, q, re.IGNORECASE) for p in patterns):
+        return True
+
+    if word_count <= 6:
+        legal_markers = (
+            "case", "court", "bail", "petition", "judgment", "judgement", "writ",
+            "appeal", "plaintiff", "defendant", "section", "article", "law",
+            "fccp", "lhc", "summarize", "explain", "find case", "indexed",
+            "relief", "decision", "judge", "order",
+        )
+        if not any(m in q for m in legal_markers):
+            social_starts = (
+                "how ", "what ", "who ", "nice ", "good ", "great ", "fine ",
+                "well ", "hey ", "hi ", "hello ",
+            )
+            if any(q.startswith(s) for s in social_starts):
+                return True
+    return False
 
 
 def is_case_inventory_query(query: str) -> bool:
@@ -1436,15 +1467,98 @@ def is_case_record_lookup(query: str) -> bool:
     return any(p in q for p in lookup_phrases)
 
 
+def is_attached_pdf_question(query: str, temp_docs: List[Dict[str, Any]], has_new_pdf: bool = False) -> bool:
+    """User wants an answer from the PDF attached in this chat session."""
+    if not temp_docs:
+        return False
+    q = normalize_text(query)
+    if not q:
+        return has_new_pdf
+    pdf_phrases = (
+        "explain", "summar", "describe", "tell me", "what is this", "what s this",
+        "about this", "about it", "this pdf", "this file", "attached", "attachment",
+        "explain it", "explain this", "key point", "overview", "details", "read this",
+        "analyze", "analyse", "review", "samjhao", "summery", "summary",
+    )
+    if any(p in q for p in pdf_phrases):
+        return True
+    if has_new_pdf and len(q.split()) <= 10:
+        return True
+    return False
+
+
+def temp_docs_to_results(temp_docs: List[Dict[str, Any]], limit: int = 6) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for rank, doc in enumerate(temp_docs[:limit], start=1):
+        results.append({
+            "rank": rank,
+            "case_id": doc.get("case_id", "CHAT-PDF"),
+            "title": doc.get("title"),
+            "court": doc.get("court"),
+            "decision_date": doc.get("decision_date"),
+            "page": doc.get("page"),
+            "chunk_index": doc.get("chunk_index"),
+            "source_type": doc.get("source_type", "chat_temp_pdf"),
+            "text": doc.get("text", ""),
+        })
+    return results
+
+
+def reply_from_attached_pdf(
+    user_question: str,
+    temp_docs: List[Dict[str, Any]],
+    attachment_notice: str = "",
+) -> str:
+    query = user_question.strip() or "Summarize this attached PDF."
+    temp_results = search_temp_docs(query, temp_docs, top_k=min(6, len(temp_docs)))
+    if not temp_results:
+        temp_results = temp_docs_to_results(temp_docs)
+
+    sources_text = build_sources_text(temp_results, max_chars_per_source=1200)
+    title = temp_docs[0].get("title", "Attached PDF") if temp_docs else "Attached PDF"
+    prompt = f"""You are JAMS, a judicial AI assistant.
+
+The user attached a PDF in chat: **{title}**
+Answer ONLY from the PDF excerpts below — not from other cases or earlier chat greetings.
+Ignore previous hi/hello small-talk; focus on the attached document.
+
+User question: {query}
+
+PDF excerpts:
+{sources_text}
+
+Write a clear answer in plain language (no "Relevant Source" / "Reasoning" headings):
+1. Brief overview
+2. Main points / facts
+3. Issues or decisions (if present in the text)
+4. Short conclusion
+
+Answer:"""
+    try:
+        answer = generate_from_model(prompt, max_new_tokens=750)
+    except Exception as exc:
+        answer = f"AI generation failed: {exc}"
+    if answer.startswith("Error"):
+        answer = (
+            f"### {title}\n\n"
+            + format_topic_case_cards(temp_results[:4])
+        )
+    if attachment_notice:
+        answer = f"**Attachment processed:** {attachment_notice}\n\n{answer}"
+    return answer
+
+
 def reply_conversational(user_question: str) -> str:
     stats = get_dashboard_stats()
     prompt = f"""You are JAMS, a friendly judicial AI management assistant.
 
 Session: {stats['cases']} indexed cases, {stats['chunks']} text chunks.
 
-The user sent a casual message (greeting, thanks, or general question).
-Reply warmly in 2-4 short sentences.
-Explain you help with judicial case PDFs — upload, search, and answers from indexed sources.
+The user sent a casual message (greeting, thanks, or general small talk).
+Reply warmly in 2-4 short sentences — plain natural text only.
+Do NOT use headings, bullet lists, "Relevant Source", "Reasoning", or "Source References".
+Do NOT say "No supported source found" for greetings.
+Briefly mention you help with judicial case PDFs when appropriate.
 If no cases indexed yet, suggest Upload Case tab or attach a PDF in chat.
 Do NOT invent case names or legal facts. Do NOT refuse simple greetings.
 
@@ -1514,6 +1628,16 @@ def chat(
 
     history = history + [{"role": "user", "content": display_user_message}]
 
+    if temp_docs and is_attached_pdf_question(user_question, temp_docs, has_new_pdf=has_pdf):
+        response = reply_from_attached_pdf(user_question, temp_docs, attachment_notice)
+        history = history + [{"role": "assistant", "content": response}]
+        return {
+            "history": history,
+            "temp_docs": temp_docs,
+            "status": "success",
+            "message": "Attached PDF explained.",
+        }
+
     if is_topic_more_request(user_question) and not temp_docs:
         prior_query = find_previous_search_query(history)
         shown_ids = collect_shown_case_ids(history)
@@ -1566,7 +1690,7 @@ def chat(
             "message": "No prior search in history.",
         }
 
-    if is_conversational_query(user_question):
+    if is_conversational_query(user_question) and not temp_docs:
         response = reply_conversational(user_question)
         history = history + [{"role": "assistant", "content": response}]
         return {
@@ -1816,9 +1940,9 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
             "message": "Matching cases found.",
         }
 
-    temp_results = search_temp_docs(user_question, temp_docs, top_k=3) if temp_docs else []
+    temp_results = search_temp_docs(user_question, temp_docs, top_k=min(6, len(temp_docs))) if temp_docs else []
 
-    if matched_case_ids and wants_case_content_answer(user_question):
+    if matched_case_ids and wants_case_content_answer(user_question) and not temp_docs:
         indexed_results = search_indexed_docs(
             user_question, top_k=5, case_ids=matched_case_ids,
         )
@@ -1826,17 +1950,21 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
             indexed_results = search_indexed_docs_global(user_question, top_k=4)
     else:
         broad = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
-        if broad:
+        if broad and not temp_docs:
             indexed_results = search_indexed_docs_balanced_courts(user_question, top_k=TOPIC_RESULTS_BATCH)
             if not indexed_results:
                 indexed_results = search_indexed_docs_global(
                     user_question, top_k=TOPIC_RESULTS_BATCH + 4, diverse_cases=True,
                 )
-        else:
+        elif not temp_docs:
             indexed_results = search_indexed_docs_global(
                 user_question, top_k=TOPIC_RESULTS_BATCH, diverse_cases=False,
             )
-    if temp_results:
+        else:
+            indexed_results = []
+    if temp_docs:
+        results = temp_results if temp_results else temp_docs_to_results(temp_docs)
+    elif temp_results:
         results = temp_results + indexed_results[:1]
     else:
         results = indexed_results
@@ -1893,7 +2021,7 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
                         "status": "success",
                         "message": "More cases returned.",
                     }
-        if is_conversational_query(user_question):
+        if is_conversational_query(user_question) and not temp_docs:
             response = reply_conversational(user_question)
         elif is_case_inventory_query(user_question):
             response = reply_case_inventory()
