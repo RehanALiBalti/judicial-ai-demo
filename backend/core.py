@@ -466,29 +466,175 @@ def index_lhc_judgment(pdf_path: str, meta: Dict[str, Any]) -> Dict[str, Any]:
 def get_query_tokens(query: str) -> List[str]:
     stopwords = {
         "court", "name", "case", "title", "date", "decision", "the", "a", "an",
-        "of", "in", "on", "for", "to", "vs", "versus", "and",
+        "of", "in", "on", "for", "to", "vs", "versus", "and", "please", "explain",
+        "this", "that", "with", "through", "etc", "lhr", "ms", "pvt", "ltd",
     }
     normalized = normalize_text(query)
     return [token for token in normalized.split() if token and token not in stopwords and len(token) > 1]
 
 
-def search_cases_by_metadata(query: str) -> List[Dict[str, Any]]:
+def extract_case_number_tokens(query: str) -> List[str]:
+    """Strong case identifiers, e.g. 7759/22 or 1442-k of 2022."""
+    found: List[str] = []
+    for pattern in (
+        r"\b\d{1,5}/\d{2,4}\b",
+        r"\b\d{1,5}-\d{2,4}\b",
+        r"\b\d{1,4}-[a-z]\s+of\s+\d{4}\b",
+        r"\bc\.?\s*p\.?\s*l\.?\s*a\.?\s*[\d\-/a-z]+",
+        r"\bf\.?\s*c\.?\s*p\.?\s*l\.?\s*a\.?\s*[\d\-/a-z]+",
+        r"\br\.?\s*f\.?\s*a\.?\s*[\d\-/a-z]+",
+    ):
+        for match in re.finditer(pattern, query, flags=re.IGNORECASE):
+            found.append(normalize_text(match.group(0)))
+    return list(dict.fromkeys(found))
+
+
+def search_cases_by_metadata(query: str, limit: int = 8) -> List[Dict[str, Any]]:
     query_normalized = normalize_text(query)
     if not query_normalized:
         return []
     query_tokens = get_query_tokens(query)
-    matched_cases: List[Dict[str, Any]] = []
+    case_numbers = extract_case_number_tokens(query)
+    scored: List[tuple] = []
+
     for case in cases:
         metadata_text = normalize_text(
             f"{case.get('case_id', '')} {case.get('title', '')} {case.get('court', '')} "
             f"{case.get('decision_date', '')} {case.get('upload_date', '')} {case.get('author_judge', '')}"
         )
-        direct_match = query_normalized in metadata_text
-        token_match_count = sum(1 for token in query_tokens if token in metadata_text)
-        token_match = len(query_tokens) >= 2 and token_match_count >= 2
-        if direct_match or token_match:
-            matched_cases.append(case)
-    return matched_cases
+        title_text = normalize_text(case.get("title", ""))
+        score = 0
+        if query_normalized in metadata_text:
+            score += 120
+        for cn in case_numbers:
+            if cn in metadata_text or cn in title_text:
+                score += 80
+        for token in query_tokens:
+            if len(token) > 5 and token in title_text:
+                score += 4
+            elif len(token) > 3 and token in title_text:
+                score += 2
+            elif token in metadata_text:
+                score += 1
+        if score > 0:
+            scored.append((score, case))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda x: (-x[0], str(x[1].get("case_id", ""))))
+    top_score = scored[0][0]
+    threshold = max(6, int(top_score * 0.45))
+    return [case for score, case in scored if score >= threshold][:limit]
+
+
+def search_manifest_by_metadata(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Find cases in FCCP/LHC manifests (may be downloaded but not indexed)."""
+    from backend.persistence import load_lhc_manifest, load_manifest as load_fccp_manifest
+
+    query_normalized = normalize_text(query)
+    query_tokens = get_query_tokens(query)
+    case_numbers = extract_case_number_tokens(query)
+    items: List[Dict[str, Any]] = []
+    for manifest in (load_fccp_manifest(), load_lhc_manifest()):
+        items.extend(manifest.get("items", []))
+
+    scored: List[tuple] = []
+    for item in items:
+        blob = normalize_text(
+            f"{item.get('case_title', '')} {item.get('case_number', '')} "
+            f"{item.get('title', '')} {item.get('author_judge', '')} {item.get('court', '')}"
+        )
+        title_text = normalize_text(item.get("case_title", "") or item.get("title", ""))
+        score = 0
+        if query_normalized in blob:
+            score += 120
+        for cn in case_numbers:
+            if cn in blob or cn in title_text:
+                score += 80
+        for token in query_tokens:
+            if len(token) > 5 and token in title_text:
+                score += 4
+            elif len(token) > 3 and token in title_text:
+                score += 2
+            elif token in blob:
+                score += 1
+        if score > 0:
+            scored.append((score, item))
+
+    scored.sort(key=lambda x: (-x[0], str(x[1].get("source_id", ""))))
+    if not scored:
+        return []
+    top_score = scored[0][0]
+    threshold = max(6, int(top_score * 0.45))
+    return [item for score, item in scored if score >= threshold][:limit]
+
+
+def is_court_name_query(query: str) -> bool:
+    q = normalize_text(query).strip()
+    if len(q.split()) > 6:
+        return False
+    court_phrases = (
+        "lahore high court", "lhc", "high court lahore",
+        "federal constitutional court", "fccp", "constitutional court of pakistan",
+    )
+    return any(p == q or q.startswith(p) for p in court_phrases)
+
+
+def reply_court_overview(user_question: str) -> str:
+    q = normalize_text(user_question)
+    try:
+        from backend.scraper.fccp import get_fccp_status
+        from backend.scraper.lhc import get_lhc_status
+
+        fccp = get_fccp_status()
+        lhc = get_lhc_status()
+    except Exception:
+        return reply_case_inventory()
+
+    if "lahore" in q or q == "lhc":
+        items = lhc.get("items", [])
+        indexed = [i for i in items if i.get("indexed")]
+        lines = [
+            "### Lahore High Court (LHC)",
+            f"- **Manifest:** {lhc.get('total_items', 0)} judgments",
+            f"- **PDFs on disk:** {lhc.get('downloaded', 0)}",
+            f"- **Indexed for chat:** {lhc.get('indexed', 0)}",
+            "",
+            "**Sample indexed LHC cases:**" if indexed else "**No LHC cases indexed for chat yet.**",
+        ]
+        for item in indexed[:8]:
+            lines.append(f"- {item.get('case_title', '—')}")
+        if not indexed and lhc.get("downloaded", 0):
+            lines.append("\n_PDFs are present but not searchable until you run `--index-only`._")
+        return "\n".join(lines)
+
+    if "fccp" in q or "constitutional" in q:
+        lines = [
+            "### Federal Constitutional Court of Pakistan (FCCP)",
+            f"- **Manifest:** {fccp.get('total_items', 0)} judgments",
+            f"- **PDFs:** {fccp.get('downloaded', 0)}",
+            f"- **Indexed for chat:** {fccp.get('indexed', 0)}",
+        ]
+        return "\n".join(lines)
+
+    return reply_case_inventory()
+
+
+def reply_manifest_case_not_indexed(item: Dict[str, Any]) -> str:
+    title = item.get("case_title") or item.get("title") or "Unknown case"
+    court = item.get("court") or "N/A"
+    has_pdf = bool(item.get("pdf_path"))
+    status = "indexed" if item.get("indexed") else ("PDF downloaded" if has_pdf else "metadata only")
+    return (
+        f"I found this case in the **manifest** but it is **not searchable in AI chat** yet:\n\n"
+        f"- **Title:** {title}\n"
+        f"- **Court:** {court}\n"
+        f"- **Status:** {status}\n\n"
+        "Run indexing on the server or PC:\n"
+        "`python scripts/run_lhc_sync.py --index-only --limit 50`\n\n"
+        "Then push `data/jams_store.json` and `data/chroma/` to the server."
+    )
 
 
 def is_topic_case_request(query: str) -> bool:
@@ -1039,6 +1185,16 @@ def chat(
             "message": "Case list sent.",
         }
 
+    if is_court_name_query(user_question) and not temp_docs:
+        response = reply_court_overview(user_question)
+        history = history + [{"role": "assistant", "content": response}]
+        return {
+            "history": history,
+            "temp_docs": temp_docs,
+            "status": "success",
+            "message": "Court overview sent.",
+        }
+
     judge_hint = extract_judge_name_from_query(user_question)
     if is_judge_query(user_question) and not temp_docs:
         judge_cases = search_cases_by_judge(user_question)
@@ -1117,6 +1273,50 @@ Answer format:
 
     metadata_matches = search_cases_by_metadata(user_question)
     matched_case_ids = [c["case_id"] for c in metadata_matches]
+
+    if wants_case_content_answer(user_question) and metadata_matches and not temp_docs:
+        focus_ids = matched_case_ids[:1] if len(metadata_matches) == 1 else matched_case_ids[:3]
+        indexed_results = search_indexed_docs(user_question, top_k=6, case_ids=focus_ids)
+        if indexed_results:
+            sources_text = build_sources_text(indexed_results)
+            prompt = f"""
+You are an AI judicial research chat assistant.
+Explain the case below ONLY from the provided sources.
+User question: {user_question}
+
+Case: {metadata_matches[0].get('title')} ({metadata_matches[0].get('case_id')})
+Court: {metadata_matches[0].get('court')}
+
+Sources:
+{sources_text}
+
+Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references (case id + page).
+"""
+            try:
+                assistant_answer = generate_from_model(prompt, max_new_tokens=700)
+            except Exception as error:
+                assistant_answer = f"AI generation failed: {str(error)}"
+            if assistant_answer.startswith("Error"):
+                assistant_answer = format_topic_case_cards(indexed_results[:3])
+            history = history + [{"role": "assistant", "content": assistant_answer}]
+            return {
+                "history": history,
+                "temp_docs": temp_docs,
+                "status": "success",
+                "message": "Case explained.",
+            }
+
+    if wants_case_content_answer(user_question) and not metadata_matches and not temp_docs:
+        manifest_hits = search_manifest_by_metadata(user_question, limit=3)
+        if manifest_hits:
+            response = reply_manifest_case_not_indexed(manifest_hits[0])
+            history = history + [{"role": "assistant", "content": response}]
+            return {
+                "history": history,
+                "temp_docs": temp_docs,
+                "status": "info",
+                "message": "Case in manifest but not indexed.",
+            }
 
     # Metadata card only for short lookups — not for "details about Ali Khan case"
     if metadata_matches and not temp_docs and is_case_record_lookup(user_question):
