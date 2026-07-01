@@ -19,6 +19,7 @@ from backend.rag.vectorstore import (
     add_document_chunks,
     build_document_search_text,
     deduplicate_results as _dedupe_results,
+    diversify_by_case,
     search_documents,
     search_temp_documents,
     sync_vectorstore,
@@ -489,6 +490,88 @@ def search_cases_by_metadata(query: str) -> List[Dict[str, Any]]:
     return matched_cases
 
 
+def is_topic_case_request(query: str) -> bool:
+    """User wants cases on a legal topic (not a single-case deep dive)."""
+    q = normalize_text(query)
+    phrases = (
+        "cases regarding", "cases about", "cases on", "cases related",
+        "cases involving", "give me cases", "show me cases", "find cases",
+        "human rights", "fundamental rights", "regarding human",
+        "any cases on", "search cases",
+    )
+    return any(p in q for p in phrases)
+
+
+def search_documents_by_keyword(
+    query: str,
+    top_k: int = 8,
+    diverse_cases: bool = True,
+) -> List[Dict[str, Any]]:
+    """Fallback when vector search returns nothing — scan indexed chunk text."""
+    tokens = get_query_tokens(query)
+    if not tokens or not documents:
+        return []
+    scored: List[tuple] = []
+    for doc in documents:
+        blob = normalize_text(
+            f"{doc.get('title', '')} {doc.get('text', '')} {doc.get('author_judge', '')}"
+        )
+        score = sum(2 if len(t) > 5 else 1 for t in tokens if t in blob)
+        if score > 0:
+            scored.append((score, doc))
+    scored.sort(key=lambda x: (-x[0], str(x[1].get("case_id", ""))))
+    raw: List[Dict[str, Any]] = []
+    for rank, (_, doc) in enumerate(scored[: top_k * 4], start=1):
+        raw.append({
+            "rank": rank,
+            "case_id": doc.get("case_id"),
+            "title": doc.get("title"),
+            "court": doc.get("court"),
+            "decision_date": doc.get("decision_date"),
+            "page": doc.get("page"),
+            "chunk_index": doc.get("chunk_index"),
+            "source_type": doc.get("source_type", "indexed_case"),
+            "author_judge": doc.get("author_judge"),
+            "text": doc.get("text", ""),
+        })
+    if diverse_cases:
+        raw = diversify_by_case(raw, max_results=top_k)
+    return raw[:top_k]
+
+
+def reply_topic_search_unavailable(user_question: str) -> str:
+    stats = get_dashboard_stats()
+    try:
+        from backend.scraper.lhc import get_lhc_status
+
+        lhc = get_lhc_status()
+        downloaded = lhc.get("downloaded") or 0
+        indexed_lhc = lhc.get("indexed") or 0
+        if downloaded > indexed_lhc or (downloaded > 0 and stats["cases"] < 100):
+            return (
+                f"I couldn't search **{user_question.strip()}** in indexed text yet.\n\n"
+                f"**On disk:** {downloaded} LHC PDFs  \n"
+                f"**Indexed for AI chat:** {stats['cases']} case(s) "
+                f"({indexed_lhc} LHC marked in manifest)\n\n"
+                "PDFs alone are not searchable — run **indexing** (`--index-only`), "
+                "then push `data/jams_store.json` and `data/chroma/` to the server."
+            )
+    except Exception:
+        pass
+    if stats["cases"] == 0:
+        return (
+            "No cases are indexed for AI search yet.\n\n"
+            "• Use **FCCP/LHC Judgments** to index PDFs, or\n"
+            "• **Upload Case** for manual uploads."
+        )
+    return (
+        f"No indexed passages matched **{user_question.strip()}** "
+        f"in the current **{stats['cases']}** case(s).\n\n"
+        "Try a narrower term (e.g. *Article 9*, *bail*, *constitutional petition*), "
+        "or index more LHC judgments for broader coverage."
+    )
+
+
 def extract_judge_name_from_query(query: str) -> str:
     patterns = [
         r"(?:decision|decession|judgment|judgement)\s+of\s+(?:mr\.?\s*)?justice\s+([a-z][a-z\-\.\s]{2,60}?)\s*$",
@@ -777,6 +860,8 @@ def reply_case_inventory() -> str:
 
 def wants_case_content_answer(query: str) -> bool:
     """User wants substance from case PDF text, not just a metadata card."""
+    if is_topic_case_request(query):
+        return False
     q = normalize_text(query)
     content_phrases = (
         "detail", "details", "about", "summar", "explain", "tell me",
@@ -795,11 +880,12 @@ def is_broad_legal_topic_query(query: str) -> bool:
         return False
     q = normalize_text(query)
     terms = (
-        "right", "rights", "article", "constitutional", "fundamental",
+        "right", "rights", "human rights", "fundamental rights",
+        "article", "constitutional", "fundamental",
         "section", "precedent", "jurisprudence", "cases on", "law on",
         "across cases", "multiple cases", "various cases",
     )
-    return any(term in q for term in terms)
+    return any(term in q for term in terms) or is_topic_case_request(query)
 
 
 def is_case_record_lookup(query: str) -> bool:
@@ -1029,6 +1115,13 @@ Answer format:
         results = indexed_results
     results = deduplicate_results(results, max_results=6)
 
+    if not results and (
+        is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
+    ):
+        if documents:
+            results = search_documents_by_keyword(user_question, top_k=8)
+            results = deduplicate_results(results, max_results=6)
+
     if not results and metadata_matches and not temp_docs:
         response = "### Matching Case Records\n\n"
         for case in metadata_matches:
@@ -1053,6 +1146,8 @@ Answer format:
             response = reply_conversational(user_question)
         elif is_case_inventory_query(user_question):
             response = reply_case_inventory()
+        elif is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question):
+            response = reply_topic_search_unavailable(user_question)
         else:
             response = (
                 "I couldn't find relevant content in your indexed cases or attached PDF "
