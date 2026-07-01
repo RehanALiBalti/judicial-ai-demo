@@ -228,10 +228,12 @@ async def chat_endpoint(
     message: str = Form(""),
     history: str = Form("[]"),
     temp_docs: str = Form("[]"),
+    chat_context: str = Form("{}"),
     file: Optional[UploadFile] = File(None),
 ):
     parsed_history: List[Dict[str, str]] = json.loads(history or "[]")
     parsed_temp_docs: List[Dict[str, Any]] = json.loads(temp_docs or "[]")
+    parsed_context: Dict[str, Any] = json.loads(chat_context or "{}")
 
     pdf_path = None
     pdf_filename = None
@@ -245,6 +247,7 @@ async def chat_endpoint(
             temp_docs=parsed_temp_docs,
             pdf_path=pdf_path,
             pdf_filename=pdf_filename,
+            chat_context=parsed_context,
         )
         result["stats"] = core.get_dashboard_stats()
         return result

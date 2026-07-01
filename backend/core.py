@@ -16,6 +16,7 @@ from pypdf import PdfReader
 from backend.chat_router import (
     CHAT_SUGGESTIONS,
     filter_relevant_results,
+    finalize_chat_payload,
     generate_grounded_answer,
     is_capabilities_query,
     merge_search_results,
@@ -1579,18 +1580,39 @@ Reply:"""
     )
 
 
+def _chat_return(
+    history: List[Dict[str, str]],
+    temp_docs: List[Dict[str, Any]],
+    status: str,
+    message: str,
+    parsed: Any = None,
+    results: Optional[List[Dict[str, Any]]] = None,
+    session_ctx: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return finalize_chat_payload(
+        {"history": history, "temp_docs": temp_docs, "status": status, "message": message},
+        parsed,
+        results,
+        session_ctx,
+    )
+
+
 def chat(
     message: str,
     history: List[Dict[str, str]],
     temp_docs: List[Dict[str, Any]],
     pdf_path: Optional[str] = None,
     pdf_filename: Optional[str] = None,
+    chat_context: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Process a chat turn. Returns updated history, temp_docs, and status."""
+    """Process a chat turn. Returns updated history, temp_docs, status, and chat_context."""
     if history is None:
         history = []
     if temp_docs is None:
         temp_docs = []
+    session_ctx: Dict[str, Any] = dict(chat_context or {})
+    parsed: Any = None
+    last_results: Optional[List[Dict[str, Any]]] = None
 
     has_pdf = pdf_path is not None
     user_question = message.strip() if message and message.strip() else ""
@@ -1628,7 +1650,7 @@ def chat(
     history = history + [{"role": "user", "content": display_user_message}]
 
     prior_history = history[:-1]
-    parsed = prepare_chat_query(user_question, prior_history)
+    parsed = prepare_chat_query(user_question, prior_history, session_context=session_ctx)
     resolved_question = parsed.resolved
     search_queries = parsed.search_queries
     follow_context = parsed.follow_context
@@ -1636,22 +1658,12 @@ def chat(
     if parsed.intent == "too_vague":
         response = reply_vague_query_help()
         history = history + [{"role": "assistant", "content": response}]
-        return {
-            "history": history,
-            "temp_docs": temp_docs,
-            "status": "info",
-            "message": "Need more detail.",
-        }
+        return _chat_return(history, temp_docs, "info", "Need more detail.", parsed, None, session_ctx)
 
     if is_capabilities_query(user_question) or parsed.intent == "capabilities":
         response = reply_capabilities()
         history = history + [{"role": "assistant", "content": response}]
-        return {
-            "history": history,
-            "temp_docs": temp_docs,
-            "status": "success",
-            "message": "Capabilities sent.",
-        }
+        return _chat_return(history, temp_docs, "success", "Capabilities sent.", parsed, None, session_ctx)
 
     if temp_docs and is_attached_pdf_question(user_question, temp_docs, has_new_pdf=has_pdf):
         response = reply_from_attached_pdf(user_question, temp_docs, attachment_notice)
@@ -1718,12 +1730,7 @@ def chat(
     if is_conversational_query(user_question) and not temp_docs:
         response = reply_conversational(user_question)
         history = history + [{"role": "assistant", "content": response}]
-        return {
-            "history": history,
-            "temp_docs": temp_docs,
-            "status": "success",
-            "message": "Reply sent.",
-        }
+        return _chat_return(history, temp_docs, "success", "Reply sent.", parsed, None, session_ctx)
 
     if is_case_inventory_query(user_question) and not temp_docs:
         response = reply_case_inventory()
@@ -2082,12 +2089,10 @@ Brief introduction:"""
         assistant_answer = f"**Attachment processed:** {attachment_notice}\n\n{assistant_answer}"
 
     history = history + [{"role": "assistant", "content": assistant_answer}]
-    return {
-        "history": history,
-        "temp_docs": temp_docs,
-        "status": "success",
-        "message": "Answer generated.",
-    }
+    last_results = results
+    return _chat_return(
+        history, temp_docs, "success", "Answer generated.", parsed, last_results, session_ctx,
+    )
 
 
 _loaded = load_persisted_cases()

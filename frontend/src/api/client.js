@@ -41,11 +41,17 @@ export async function uploadCase({ file, caseTitle, courtName, decisionDate }) {
   return handleResponse(res);
 }
 
-export async function sendChat({ message, history, tempDocs, file }) {
+export async function fetchChatSuggestions() {
+  const res = await fetch(`${API_BASE}/api/chat/suggestions`);
+  return handleResponse(res);
+}
+
+export async function sendChat({ message, history, tempDocs, chatContext, file }) {
   const form = new FormData();
   form.append("message", message || "");
   form.append("history", JSON.stringify(history || []));
   form.append("temp_docs", JSON.stringify(tempDocs || []));
+  form.append("chat_context", JSON.stringify(chatContext || {}));
   if (file) form.append("file", file);
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",

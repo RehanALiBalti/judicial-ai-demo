@@ -1,23 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { sendChat } from "../api/client";
+import { fetchChatSuggestions, sendChat } from "../api/client";
 import Spinner from "../components/Spinner";
 import Toast from "../components/Toast";
 import TypingIndicator from "../components/TypingIndicator";
 import { IconAttach, IconClose, IconPdf, IconSend } from "../components/ChatIcons";
 
-const SUGGESTIONS = [
+const DEFAULT_SUGGESTIONS = [
   "How many cases are indexed?",
   "zamanat / bail cases dikhao",
   "F.C.P.L.A. No.73-K of 2026 samjhao",
   "CASE-055 summarize",
-  "court ne raihat di — cases find karo",
   "What can you ask JAMS?",
 ];
 
 export default function ChatPage({ onStatsChange }) {
   const [history, setHistory] = useState([]);
   const [tempDocs, setTempDocs] = useState([]);
+  const [chatContext, setChatContext] = useState({});
+  const [suggestions, setSuggestions] = useState(DEFAULT_SUGGESTIONS);
   const [message, setMessage] = useState("");
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -28,6 +29,16 @@ export default function ChatPage({ onStatsChange }) {
   const textareaRef = useRef(null);
 
   const canSend = Boolean(message.trim() || file) && !loading;
+
+  useEffect(() => {
+    fetchChatSuggestions()
+      .then((data) => {
+        if (Array.isArray(data?.suggestions) && data.suggestions.length > 0) {
+          setSuggestions(data.suggestions);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -50,9 +61,10 @@ export default function ChatPage({ onStatsChange }) {
     }
     setLoading(true);
     try {
-      const result = await sendChat({ message, history, tempDocs, file });
+      const result = await sendChat({ message, history, tempDocs, chatContext, file });
       setHistory(result.history || []);
       setTempDocs(result.temp_docs || []);
+      setChatContext(result.chat_context || {});
       setMessage("");
       setFile(null);
       if (fileRef.current) fileRef.current.value = "";
@@ -73,6 +85,7 @@ export default function ChatPage({ onStatsChange }) {
   const clearChat = () => {
     setHistory([]);
     setTempDocs([]);
+    setChatContext({});
     setMessage("");
     setFile(null);
     if (fileRef.current) fileRef.current.value = "";
@@ -111,7 +124,7 @@ export default function ChatPage({ onStatsChange }) {
               <h3>Start a conversation</h3>
               <p>Upload a case PDF in Upload Case tab, or attach a PDF here for quick Q&amp;A.</p>
               <div className="suggestion-chips">
-                {SUGGESTIONS.map((s) => (
+                {suggestions.map((s) => (
                   <button
                     key={s}
                     type="button"

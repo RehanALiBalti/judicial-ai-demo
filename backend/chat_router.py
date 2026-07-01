@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 CHAT_SUGGESTIONS: List[str] = [
     "How many cases are indexed?",
@@ -99,11 +99,17 @@ def normalize_user_message(text: str) -> str:
     return t
 
 
-def prepare_chat_query(query: str, history: List[Dict[str, str]]) -> ParsedUserQuery:
+def prepare_chat_query(
+    query: str,
+    history: List[Dict[str, str]],
+    session_context: Optional[Dict[str, Any]] = None,
+) -> ParsedUserQuery:
     """Single entry: normalize, resolve follow-ups, classify intent, build search variants."""
     original = (query or "").strip()
     normalized = normalize_user_message(original)
-    resolved, follow_context = resolve_follow_up_question(normalized, history)
+    resolved, follow_context = resolve_follow_up_question(
+        normalized, history, session_context=session_context,
+    )
     intent = classify_intent(resolved, history)
     search_queries = build_retrieval_queries(resolved)
     return ParsedUserQuery(
@@ -270,6 +276,7 @@ _Answers sirf indexed judgments + attached PDF se — general internet law nahi.
 def resolve_follow_up_question(
     query: str,
     history: List[Dict[str, str]],
+    session_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
     """Expand vague follow-ups using prior chat (many phrasings)."""
     from backend.core import extract_case_ids_from_text, normalize_text
@@ -319,6 +326,19 @@ def resolve_follow_up_question(
         text = normalize_user_message(text)
         if len(text.split()) >= 3 and not is_capabilities_query(text) and not is_too_vague_for_search(text):
             return f"{text} — {q}", "Follow-up to your earlier question"
+
+    if session_context:
+        from backend.core import is_topic_more_request
+
+        topic = session_context.get("last_topic") or ""
+        title = session_context.get("last_case_title") or ""
+        case_id = (session_context.get("last_case_ids") or [None])[0]
+        wants_more = short_vague or is_topic_more_request(q) or any(v in qn for v in vague_markers)
+        if topic and wants_more:
+            return f"{topic} — {q}", f"Follow-up (session): {topic[:50]}"
+        if title and wants_more:
+            note = f"Follow-up about {case_id}" if case_id else f"Follow-up: {title[:50]}"
+            return f"{title} — {q}", note
 
     return q, ""
 
@@ -388,7 +408,7 @@ def search_with_query_variants(
     case_ids: List[str] | None = None,
     balanced: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Run retrieval with multiple phrasings; merge best hits."""
+    """Run retrieval with multiple phrasings; merge + hybrid re-rank."""
     from backend.core import (
         search_documents_by_keyword,
         search_indexed_docs,
@@ -397,6 +417,7 @@ def search_with_query_variants(
     )
 
     batches: List[List[Dict[str, Any]]] = []
+    primary = search_queries[0] if search_queries else ""
     for q in search_queries[:4]:
         if not q:
             continue
@@ -411,12 +432,89 @@ def search_with_query_variants(
         if hits:
             batches.append(hits)
 
-    merged = merge_search_results(batches, max_results=top_k)
-    if not merged and search_queries:
-        kw = search_documents_by_keyword(search_queries[0], top_k=top_k)
+    merged = merge_search_results(batches, max_results=top_k * 2)
+    if primary:
+        merged = hybrid_boost_results(primary, merged, max_results=top_k)
+    if not merged and primary:
+        kw = search_documents_by_keyword(primary, top_k=top_k)
         if kw:
-            merged = kw
-    return merged
+            merged = hybrid_boost_results(primary, kw, max_results=top_k)
+    return merged[:top_k]
+
+
+def hybrid_boost_results(
+    query: str,
+    results: List[Dict[str, Any]],
+    max_results: int = 8,
+) -> List[Dict[str, Any]]:
+    """Re-rank vector hits with keyword overlap (better for varied user phrasing)."""
+    if not results:
+        return []
+    scored = [(score_result_relevance(query, item), idx, item) for idx, item in enumerate(results)]
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    top = scored[0][0]
+    if top == 0:
+        return results[:max_results]
+    return [item for _, _, item in scored[:max_results]]
+
+
+def clean_assistant_answer(text: str) -> str:
+    """Remove common small-model junk (fake source sections, repeated greetings)."""
+    if not text:
+        return text
+    t = text.strip()
+    junk_patterns = (
+        r"\n\s*Relevant\s+[Ss]ource:?\s*No supported source found\.?\s*",
+        r"\n\s*Reasoning:?\s*The current user question is a simple greeting.*?\.(\n|$)",
+        r"\n\s*Source References:?\s*$",
+        r"\nUser:\s*hi\s*\nAssistant:.*$",
+    )
+    for pat in junk_patterns:
+        t = re.sub(pat, "\n", t, flags=re.IGNORECASE | re.DOTALL)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    return t
+
+
+def compute_chat_context(
+    parsed: Optional[ParsedUserQuery],
+    results: Optional[List[Dict[str, Any]]],
+    prior: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Session memory for follow-ups (survives even if user phrasing varies)."""
+    ctx = dict(prior or {})
+    if not parsed:
+        return ctx
+    ctx["last_intent"] = parsed.intent
+    if parsed.intent in ("topic_search", "more_results", "general_search"):
+        ctx["last_topic"] = parsed.resolved
+    if parsed.intent == "case_explain" and parsed.resolved:
+        ctx["last_topic"] = parsed.resolved
+    if results:
+        ids = list(dict.fromkeys(
+            str(r.get("case_id")) for r in results if r.get("case_id") and r.get("case_id") != "CHAT-PDF"
+        ))
+        if ids:
+            ctx["last_case_ids"] = ids[:12]
+            ctx["last_case_id"] = ids[0]
+        title = results[0].get("title")
+        if title:
+            ctx["last_case_title"] = str(title)[:300]
+    return ctx
+
+
+def finalize_chat_payload(
+    payload: Dict[str, Any],
+    parsed: Optional[ParsedUserQuery],
+    results: Optional[List[Dict[str, Any]]],
+    session_context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Clean assistant text + attach session context to every chat response."""
+    history = payload.get("history") or []
+    if history and history[-1].get("role") == "assistant":
+        history[-1]["content"] = clean_assistant_answer(history[-1].get("content", ""))
+    payload["history"] = history
+    payload["chat_context"] = compute_chat_context(parsed, results, session_context)
+    return payload
 
 
 def score_result_relevance(query: str, result: Dict[str, Any]) -> int:
@@ -503,4 +601,11 @@ Answer:"""
         return f"AI generation failed: {exc}"
     if answer.startswith("Error"):
         return format_topic_case_cards(results[:4])
+    top_rel = max(score_result_relevance(user_question, r) for r in results)
+    if top_rel <= 2:
+        answer += (
+            "\n\n---\n"
+            "_Confidence is **Low** — sources weakly match your question. "
+            "Try a case number, CASE-ID, or a clearer topic (bail, relief, rent)._"
+        )
     return answer
