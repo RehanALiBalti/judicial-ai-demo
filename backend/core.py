@@ -1002,11 +1002,43 @@ def generate_from_model(prompt: str, max_new_tokens: int = 350) -> str:
 
 
 def get_dashboard_stats() -> Dict[str, int]:
-    total_pages = sum(c.get("pages", 0) for c in cases)
+    """Header stats: dataset totals (FCCP+LHC manifests) + indexed AI store metrics."""
+    indexed_cases = len(cases)
+    indexed_chunks = len(documents)
+    indexed_pages = sum(c.get("pages", 0) for c in cases)
+
+    fccp_items = fccp_downloaded = fccp_indexed = 0
+    lhc_items = lhc_downloaded = lhc_indexed = 0
+    try:
+        from backend.scraper.fccp import get_fccp_status
+        from backend.scraper.lhc import get_lhc_status
+
+        fccp = get_fccp_status()
+        lhc = get_lhc_status()
+        fccp_items = int(fccp.get("total_items") or 0)
+        fccp_downloaded = int(fccp.get("downloaded") or 0)
+        fccp_indexed = int(fccp.get("indexed") or 0)
+        lhc_items = int(lhc.get("total_items") or 0)
+        lhc_downloaded = int(lhc.get("downloaded") or 0)
+        lhc_indexed = int(lhc.get("indexed") or 0)
+    except Exception:
+        pass
+
+    total_records = fccp_items + lhc_items
+    total_downloaded = fccp_downloaded + lhc_downloaded
+    total_manifest_indexed = fccp_indexed + lhc_indexed
+
     return {
-        "cases": len(cases),
-        "chunks": len(documents),
-        "pages": total_pages,
+        # Header chips (FCCP + LHC combined)
+        "cases": total_records if total_records else indexed_cases,
+        "chunks": indexed_chunks,
+        "pages": indexed_pages,
+        # Breakdown for tabs / debugging
+        "fccp_cases": fccp_items,
+        "lhc_cases": lhc_items,
+        "downloaded": total_downloaded,
+        "indexed_cases": indexed_cases,
+        "manifest_indexed": total_manifest_indexed,
     }
 
 
