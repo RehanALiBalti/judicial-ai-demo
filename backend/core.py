@@ -504,6 +504,9 @@ def search_cases_by_metadata(query: str, limit: int = 8) -> List[Dict[str, Any]]
         )
         title_text = normalize_text(case.get("title", ""))
         score = 0
+        case_id_hint = extract_case_id_from_query(query)
+        if case_id_hint and case.get("case_id", "").upper() == case_id_hint:
+            score += 200
         if query_normalized in metadata_text:
             score += 120
         for cn in case_numbers:
@@ -868,6 +871,71 @@ def lookup_case(case_id: str) -> Optional[Dict[str, Any]]:
         if case.get("case_id") == case_id:
             return case
     return None
+
+
+def extract_case_id_from_query(query: str) -> str:
+    match = re.search(r"\bCASE-\d{3,5}\b", query, flags=re.IGNORECASE)
+    return match.group(0).upper() if match else ""
+
+
+def find_manifest_item_by_case_id(case_id: str) -> Optional[Dict[str, Any]]:
+    from backend.persistence import load_lhc_manifest, load_manifest as load_fccp_manifest
+
+    cid = case_id.upper()
+    for item in load_fccp_manifest().get("items", []) + load_lhc_manifest().get("items", []):
+        if str(item.get("case_id", "")).upper() == cid:
+            return item
+    return None
+
+
+def reply_summarize_case(case: Dict[str, Any], user_question: str) -> str:
+    indexed_results = search_indexed_docs(
+        user_question or f"Summarize {case.get('title', '')}",
+        top_k=8,
+        case_ids=[case["case_id"]],
+    )
+    if not indexed_results:
+        indexed_results = search_documents_by_keyword(
+            case.get("title", "") or user_question,
+            top_k=6,
+            diverse_cases=False,
+        )
+        indexed_results = [r for r in indexed_results if r.get("case_id") == case["case_id"]]
+
+    if not indexed_results:
+        return (
+            f"**{case.get('case_id')}** — {case.get('title')}\n\n"
+            "Case record found but no indexed text passages are available on this server yet. "
+            "Run indexing or push `jams_store.json` + `chroma/` from your PC."
+        )
+
+    sources_text = build_sources_text(indexed_results, max_chars_per_source=800)
+    prompt = f"""
+You are an AI judicial research assistant. Summarize this case ONLY from the sources below.
+
+Case ID: {case.get('case_id')}
+Title: {case.get('title')}
+Court: {case.get('court')}
+Decision Date: {case.get('decision_date')}
+
+User request: {user_question}
+
+Sources:
+{sources_text}
+
+Provide:
+1) Brief facts
+2) Key issues
+3) Court decision / outcome
+4) Source references (case id + page numbers)
+"""
+    try:
+        answer = generate_from_model(prompt, max_new_tokens=700)
+    except Exception as exc:
+        answer = f"AI generation failed: {exc}"
+    if answer.startswith("Error"):
+        answer = format_topic_case_cards(indexed_results[:4])
+    return f"### {case.get('case_id')} — {case.get('title')}\n\n{answer}"
 
 
 def deduplicate_results(results: List[Dict[str, Any]], max_results: int = 4) -> List[Dict[str, Any]]:
@@ -1282,6 +1350,32 @@ def chat(
             "status": "success",
             "message": "Court overview sent.",
         }
+
+    case_id_hint = extract_case_id_from_query(user_question)
+    if case_id_hint and not temp_docs:
+        case = lookup_case(case_id_hint)
+        if not case:
+            manifest_item = find_manifest_item_by_case_id(case_id_hint)
+            if manifest_item:
+                case, load_error = ensure_case_loaded_from_manifest(manifest_item)
+                if not case and load_error:
+                    response = reply_manifest_case_not_indexed(manifest_item, load_error)
+                    history = history + [{"role": "assistant", "content": response}]
+                    return {
+                        "history": history,
+                        "temp_docs": temp_docs,
+                        "status": "info",
+                        "message": "Case not indexed on server.",
+                    }
+        if case:
+            response = reply_summarize_case(case, user_question)
+            history = history + [{"role": "assistant", "content": response}]
+            return {
+                "history": history,
+                "temp_docs": temp_docs,
+                "status": "success",
+                "message": "Case summarized.",
+            }
 
     judge_hint = extract_judge_name_from_query(user_question)
     if is_judge_query(user_question) and not temp_docs:
