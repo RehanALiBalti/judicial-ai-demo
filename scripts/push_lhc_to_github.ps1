@@ -16,8 +16,8 @@ Set-Location $Root
 
 $pdfCount = (Get-ChildItem "data\lhc\pdfs\*.pdf" -ErrorAction SilentlyContinue).Count
 $pdfGb = [math]::Round(((Get-ChildItem "data\lhc\pdfs\*.pdf" | Measure-Object Length -Sum).Sum / 1GB), 2)
-Write-Host "LHC: $pdfCount PDFs (~${pdfGb} GB) + manifest.json"
-Write-Host "First push may take 30–60+ minutes depending on upload speed."
+Write-Host "LHC: $($pdfCount) PDFs (~$pdfGb GB) + manifest.json"
+Write-Host "First push may take 30-60+ minutes depending on upload speed."
 Write-Host ""
 
 git add data/lhc/manifest.json data/lhc/pdfs/
@@ -26,7 +26,9 @@ if ($IncludeFccp) {
 }
 if ($IncludeIndexed) {
     if (-not (Get-Command git-lfs -ErrorAction SilentlyContinue)) {
-        Write-Host "Install Git LFS for indexed data: winget install GitHub.GitLFS && git lfs install"
+        Write-Host "Install Git LFS for indexed data:"
+        Write-Host "  winget install GitHub.GitLFS"
+        Write-Host "  git lfs install"
         exit 1
     }
     git lfs install
@@ -41,10 +43,14 @@ $confirm = Read-Host "Commit and push to GitHub? (y/n)"
 if ($confirm -ne "y") { exit 0 }
 
 git config http.postBuffer 524288000
-git commit -m "Add LHC judgment dataset ($pdfCount PDFs)"
+$commitMsg = "Add LHC judgment dataset ($pdfCount PDFs)"
+if ($IncludeIndexed) {
+    $commitMsg = "Add LHC dataset and indexed AI store (chroma + jams_store)"
+}
+git commit -m $commitMsg
 git push
 
 Write-Host ""
 Write-Host "Server:"
-Write-Host "  cd /opt/jams && sudo -u www-data git pull"
-Write-Host "  sudo bash /opt/jams/deploy/pull-data-from-git.sh"
+Write-Host '  cd /opt/jams; sudo -u www-data git pull; sudo -u www-data git lfs pull'
+Write-Host '  sudo bash /opt/jams/deploy/pull-data-from-git.sh'
