@@ -702,10 +702,200 @@ def is_topic_case_request(query: str) -> bool:
     phrases = (
         "cases regarding", "cases about", "cases on", "cases related",
         "cases involving", "give me cases", "show me cases", "find cases",
+        "find cases where", "cases where", "where court",
+        "indexed cases about", "relevant indexed cases", "relevant cases about",
+        "find relevant cases", "matching cases about", "search for cases",
         "human rights", "fundamental rights", "regarding human",
         "any cases on", "search cases",
     )
     return any(p in q for p in phrases)
+
+
+def extract_topic_keywords(query: str) -> List[str]:
+    """Legal-topic tokens from a cross-case request (drop framing words)."""
+    framing = {
+        "find", "relevant", "indexed", "cases", "case", "about", "regarding",
+        "related", "involving", "search", "show", "give", "list", "manifest",
+        "records", "record", "matching", "from", "your", "database", "system",
+    }
+    return [t for t in get_query_tokens(query) if t not in framing]
+
+
+def search_manifest_by_topic(query: str, limit: int = 8) -> List[Dict[str, Any]]:
+    """Search FCCP/LHC manifests by topic when vector index is empty or thin."""
+    from backend.persistence import load_lhc_manifest, load_manifest as load_fccp_manifest
+
+    keywords = extract_topic_keywords(query)
+    if not keywords:
+        return []
+
+    items: List[Dict[str, Any]] = []
+    for manifest in (load_fccp_manifest(), load_lhc_manifest()):
+        items.extend(manifest.get("items", []))
+
+    scored: List[tuple] = []
+    for item in items:
+        blob = normalize_text(
+            f"{item.get('case_title', '')} {item.get('case_number', '')} "
+            f"{item.get('title', '')} {item.get('tag_line', '')}"
+        )
+        score = sum(
+            (4 if kw in normalize_text(item.get("case_number", "")) else 0)
+            + (3 if kw in normalize_text(item.get("case_title", "")) else 0)
+            + (2 if kw in blob else 0)
+            for kw in keywords
+        )
+        if score > 0:
+            scored.append((score, item))
+
+    scored.sort(key=lambda x: (-x[0], str(x[1].get("source_id", ""))))
+    hits = [item for _, item in scored[:limit]]
+    results: List[Dict[str, Any]] = []
+    for rank, item in enumerate(hits, start=1):
+        snippet = (item.get("tag_line") or item.get("case_title") or "").strip()
+        if len(snippet) > 500:
+            snippet = snippet[:500].rstrip() + "…"
+        results.append({
+            "rank": rank,
+            "case_id": item.get("case_id") or "—",
+            "title": item.get("case_title") or item.get("title"),
+            "court": item.get("court"),
+            "decision_date": item.get("decision_date"),
+            "page": "—",
+            "source_type": "manifest",
+            "author_judge": item.get("author_judge"),
+            "text": snippet or "(No summary text in manifest.)",
+        })
+    return results
+
+
+def is_topic_more_request(query: str) -> bool:
+    """Follow-up: user wants additional results from the previous case search."""
+    q = normalize_text(query).strip()
+    if not q or len(q.split()) > 28:
+        return False
+
+    unambiguous = (
+        "more data", "more cases", "more results", "more sources", "more detail",
+        "give me more", "show me more", "show more", "any more", "need more",
+        "additional cases", "other cases", "next page", "next batch",
+        "more please", "keep going", "expand results", "further cases",
+        "provide more sources", "provide more cases", "provide more data",
+    )
+    if any(p in q for p in unambiguous):
+        return True
+    if re.match(r"^(more|continue|next|mazeed|mazid|aur)[?.!\s]*$", q):
+        return True
+
+    urdu_more = (
+        "mazeed", "mazid", "zyada", "aur source", "aur sources", "aur case",
+        "aur cases", "aur data", "aur result", "provide karo", "de do", "dedo",
+        "dikhao", "chahiye", "pechlay sawal", "pichlay sawal", "pehlay sawal",
+        "previous question", "last question", "same search", "wahi topic",
+        "usi topic", "isi topic", "pechli search", "pichli search",
+    )
+    if any(p in q for p in urdu_more):
+        return True
+
+    if re.search(
+        r"\b(more|mazeed|mazid|zyada|aur|additional|further)\b.*\b("
+        r"source|sources|case|cases|data|result|results|sawal)\b",
+        q,
+    ):
+        return True
+    if re.search(
+        r"\b(source|sources|case|cases|data|result|results)\b.*\b("
+        r"provide|karo|do|dikhao|chahiye|dena|dedo)\b",
+        q,
+    ) and re.search(r"\b(more|mazeed|mazid|zyada|aur|additional)\b", q):
+        return True
+    return False
+
+
+def assistant_has_case_sources(text: str) -> bool:
+    if not text:
+        return False
+    if "### Source" in text or "### Matching Case Records" in text:
+        return True
+    if re.search(r"Source\s+\d+", text, re.IGNORECASE) and re.search(
+        r"Case\s*ID", text, re.IGNORECASE
+    ):
+        return True
+    return len(extract_case_ids_from_text(text)) >= 2
+
+
+def collect_shown_case_ids(history: List[Dict[str, str]]) -> List[str]:
+    """All case IDs already shown in this chat (for pagination)."""
+    prior = history[:-1] if history and history[-1].get("role") == "user" else list(history)
+    ids: List[str] = []
+    for msg in prior:
+        if msg.get("role") == "assistant":
+            ids.extend(extract_case_ids_from_text(msg.get("content", "")))
+    return list(dict.fromkeys(ids))
+
+
+def extract_case_ids_from_text(text: str) -> List[str]:
+    return list(dict.fromkeys(
+        m.group(0).upper() for m in re.finditer(r"\bCASE-\d+\b", text or "", re.IGNORECASE)
+    ))
+
+
+def find_previous_search_query(history: List[Dict[str, str]]) -> str:
+    """User query from the prior turn that returned case source cards."""
+    prior = history[:-1] if history and history[-1].get("role") == "user" else list(history)
+    for i in range(len(prior) - 1, -1, -1):
+        if prior[i].get("role") != "user":
+            continue
+        text = re.sub(r"^📎.*?\n\n", "", prior[i].get("content", ""), flags=re.DOTALL).strip()
+        if not text or is_topic_more_request(text):
+            continue
+        if i + 1 < len(prior):
+            assistant = prior[i + 1].get("content", "")
+            if assistant_has_case_sources(assistant):
+                return text
+        if is_topic_case_request(text) or is_broad_legal_topic_query(text):
+            return text
+    return ""
+
+
+TOPIC_RESULTS_BATCH = 10
+
+
+def search_topic_results(
+    query: str,
+    top_k: int = TOPIC_RESULTS_BATCH,
+    exclude_case_ids: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Topic search with optional pagination (skip already-shown cases)."""
+    exclude = {c.upper() for c in (exclude_case_ids or []) if c}
+    pool_k = max(top_k * 5, 24)
+
+    broad = is_broad_legal_topic_query(query) or is_topic_case_request(query)
+    if broad:
+        raw = search_indexed_docs_balanced_courts(query, top_k=pool_k)
+        if not raw:
+            raw = search_indexed_docs_global(query, top_k=pool_k, diverse_cases=True)
+    else:
+        raw = search_indexed_docs_global(query, top_k=pool_k, diverse_cases=True)
+
+    if not raw and documents:
+        raw = search_documents_by_keyword(query, top_k=pool_k, diverse_cases=False)
+    if not raw:
+        raw = search_manifest_by_topic(query, limit=pool_k)
+
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        cid = str(item.get("case_id", "")).upper()
+        if not cid or cid == "—" or cid in exclude or cid in seen:
+            continue
+        seen.add(cid)
+        out.append(item)
+        if len(out) >= top_k:
+            break
+    for rank, item in enumerate(out, start=1):
+        item["rank"] = rank
+    return out
 
 
 def search_documents_by_keyword(
@@ -1139,6 +1329,8 @@ def is_conversational_query(query: str) -> bool:
 
 def is_case_inventory_query(query: str) -> bool:
     """User asking what cases exist — answer from metadata, not vector search."""
+    if is_topic_case_request(query):
+        return False
     q = normalize_text(query)
     phrases = (
         "what cases", "which cases", "list cases", "indexed cases",
@@ -1227,6 +1419,7 @@ def is_broad_legal_topic_query(query: str) -> bool:
         "article", "constitutional", "fundamental",
         "section", "precedent", "jurisprudence", "cases on", "law on",
         "across cases", "multiple cases", "various cases",
+        "relief", "remedy", "granted relief", "court granted",
     )
     return any(term in q for term in terms) or is_topic_case_request(query)
 
@@ -1320,6 +1513,58 @@ def chat(
         display_user_message = f"📎 {pdf_filename}\n\n{user_question}"
 
     history = history + [{"role": "user", "content": display_user_message}]
+
+    if is_topic_more_request(user_question) and not temp_docs:
+        prior_query = find_previous_search_query(history)
+        shown_ids = collect_shown_case_ids(history)
+        if prior_query:
+            more_results = search_topic_results(
+                prior_query, top_k=TOPIC_RESULTS_BATCH, exclude_case_ids=shown_ids,
+            )
+            if more_results:
+                intro = (
+                    f"Here are **{len(more_results)}** more case(s) matching "
+                    f"**{prior_query}**"
+                )
+                if shown_ids:
+                    intro += f" ({len(shown_ids)} already shown, skipped)"
+                intro += ":"
+                response = intro + "\n\n" + format_topic_case_cards(more_results)
+                note = (
+                    "\n\n_Ask **“mazeed”**, **“more”**, or **“aur sources”** for the next batch._"
+                )
+                history = history + [{"role": "assistant", "content": response + note}]
+                return {
+                    "history": history,
+                    "temp_docs": temp_docs,
+                    "status": "success",
+                    "message": "More cases returned.",
+                }
+            response = (
+                f"No more indexed cases found for: **{prior_query}**\n\n"
+                f"Already showed **{len(shown_ids)}** case(s). "
+                "Try a broader term or start a new search."
+            )
+            history = history + [{"role": "assistant", "content": response}]
+            return {
+                "history": history,
+                "temp_docs": temp_docs,
+                "status": "info",
+                "message": "No more cases for prior topic.",
+            }
+        response = (
+            "I could not find your **previous search** in this chat.\n\n"
+            "Please ask your topic again (e.g. *Find cases where court granted relief*), "
+            "then say **mazeed sources** or **more** for additional cases.\n\n"
+            "_Do not use **Clear chat** between the search and the follow-up._"
+        )
+        history = history + [{"role": "assistant", "content": response}]
+        return {
+            "history": history,
+            "temp_docs": temp_docs,
+            "status": "info",
+            "message": "No prior search in history.",
+        }
 
     if is_conversational_query(user_question):
         response = reply_conversational(user_question)
@@ -1459,6 +1704,23 @@ Answer format:
     if wants_case_content_answer(user_question) and metadata_matches and not temp_docs:
         focus_ids = matched_case_ids[:1] if len(metadata_matches) == 1 else matched_case_ids[:3]
         indexed_results = search_indexed_docs(user_question, top_k=6, case_ids=focus_ids)
+        if not indexed_results and len(metadata_matches) == 1:
+            indexed_results = search_documents_by_keyword(
+                metadata_matches[0].get("title", "") or user_question,
+                top_k=6,
+                diverse_cases=False,
+            )
+            indexed_results = [
+                r for r in indexed_results if r.get("case_id") == metadata_matches[0].get("case_id")
+            ]
+        if not indexed_results and len(metadata_matches) == 1:
+            manifest_item = find_manifest_item_by_case_id(str(metadata_matches[0].get("case_id", "")))
+            if manifest_item:
+                loaded, load_error = ensure_case_loaded_from_manifest(manifest_item)
+                if loaded:
+                    indexed_results = search_indexed_docs(
+                        user_question, top_k=6, case_ids=[loaded["case_id"]],
+                    )
         if indexed_results:
             sources_text = build_sources_text(indexed_results)
             prompt = f"""
@@ -1565,27 +1827,31 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
     else:
         broad = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
         if broad:
-            indexed_results = search_indexed_docs_balanced_courts(user_question, top_k=6)
+            indexed_results = search_indexed_docs_balanced_courts(user_question, top_k=TOPIC_RESULTS_BATCH)
             if not indexed_results:
                 indexed_results = search_indexed_docs_global(
-                    user_question, top_k=8, diverse_cases=True,
+                    user_question, top_k=TOPIC_RESULTS_BATCH + 4, diverse_cases=True,
                 )
         else:
             indexed_results = search_indexed_docs_global(
-                user_question, top_k=4, diverse_cases=False,
+                user_question, top_k=TOPIC_RESULTS_BATCH, diverse_cases=False,
             )
     if temp_results:
         results = temp_results + indexed_results[:1]
     else:
         results = indexed_results
-    results = deduplicate_results(results, max_results=6)
+    results = deduplicate_results(results, max_results=TOPIC_RESULTS_BATCH)
 
     if not results and (
         is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
     ):
         if documents:
-            results = search_documents_by_keyword(user_question, top_k=8)
-            results = deduplicate_results(results, max_results=6)
+            results = search_documents_by_keyword(user_question, top_k=TOPIC_RESULTS_BATCH + 4)
+            results = deduplicate_results(results, max_results=TOPIC_RESULTS_BATCH)
+        if not results:
+            manifest_hits = search_manifest_by_topic(user_question, limit=8)
+            if manifest_hits:
+                results = manifest_hits
 
     if not results and metadata_matches and not temp_docs:
         response = "### Matching Case Records\n\n"
@@ -1607,6 +1873,26 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
         }
 
     if not results:
+        if is_topic_more_request(user_question):
+            prior_query = find_previous_search_query(history)
+            shown_ids = collect_shown_case_ids(history)
+            if prior_query:
+                more_results = search_topic_results(
+                    prior_query, top_k=TOPIC_RESULTS_BATCH, exclude_case_ids=shown_ids,
+                )
+                if more_results:
+                    intro = (
+                        f"Here are **{len(more_results)}** more case(s) for "
+                        f"**{prior_query}**:"
+                    )
+                    response = intro + "\n\n" + format_topic_case_cards(more_results)
+                    history = history + [{"role": "assistant", "content": response}]
+                    return {
+                        "history": history,
+                        "temp_docs": temp_docs,
+                        "status": "success",
+                        "message": "More cases returned.",
+                    }
         if is_conversational_query(user_question):
             response = reply_conversational(user_question)
         elif is_case_inventory_query(user_question):
