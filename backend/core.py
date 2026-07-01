@@ -621,19 +621,22 @@ def reply_court_overview(user_question: str) -> str:
     return reply_case_inventory()
 
 
-def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
     """Index a manifest case from local PDF if the AI store on this server is missing it."""
     from backend.persistence import resolve_lhc_pdf_path
 
     case_id = item.get("case_id")
-    if case_id:
-        found = lookup_case(str(case_id))
-        if found:
-            return found
+    source_id = item.get("source_id")
+    for existing in cases:
+        if case_id and existing.get("case_id") == case_id:
+            return existing, ""
+        if source_id and existing.get("source_id") == source_id:
+            return existing, ""
 
     pdf_path = resolve_lhc_pdf_path(item)
     if not pdf_path:
-        return None
+        hint = item.get("file_name") or "lhc-*.pdf"
+        return None, f"PDF not found on this server (expected data/lhc/pdfs/{hint}). Run git pull."
 
     try:
         item = {**item, "pdf_path": pdf_path}
@@ -642,30 +645,40 @@ def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Optional[Dict[str,
         else:
             result = index_lhc_judgment(pdf_path, item)
         if result.get("success"):
-            return lookup_case(str(result.get("case_id") or case_id or ""))
-    except Exception:
-        return None
-    return None
+            found = lookup_case(str(result.get("case_id") or case_id or ""))
+            if found:
+                return found, ""
+            for existing in cases:
+                if source_id and existing.get("source_id") == source_id:
+                    return existing, ""
+        return None, result.get("message", "Indexing failed")
+    except Exception as exc:
+        return None, str(exc)
 
 
-def reply_manifest_case_not_indexed(item: Dict[str, Any]) -> str:
+def reply_manifest_case_not_indexed(item: Dict[str, Any], load_error: str = "") -> str:
     from backend.persistence import resolve_lhc_pdf_path
 
     title = item.get("case_title") or item.get("title") or "Unknown case"
     court = item.get("court") or "N/A"
     has_pdf = bool(resolve_lhc_pdf_path(item))
+    err_block = f"\n\n**Server error:** {load_error}" if load_error else ""
 
     if item.get("indexed") and item.get("case_id"):
         return (
-            f"This case is marked **indexed** in the manifest (from your PC) but the "
-            f"**AI database is not loaded on this server** yet.\n\n"
+            f"This case is marked **indexed** on your PC but **not in this server's AI store**.\n\n"
             f"- **Title:** {title}\n"
             f"- **Court:** {court}\n"
-            f"- **Manifest case ID:** {item.get('case_id')}\n\n"
-            "**Fix (choose one):**\n"
-            "1. Push indexed data from PC: `push_lhc_to_github.ps1 -IncludeIndexed`\n"
-            "2. On server: `/opt/jams/.venv/bin/python scripts/run_lhc_sync.py --index-only --limit 50`\n"
-            "   then `systemctl restart jams-backend`"
+            f"- **Manifest case ID:** {item.get('case_id')}\n"
+            f"- **PDF on server:** {'yes' if has_pdf else 'no'}{err_block}\n\n"
+            "**Fix — run on server:**\n"
+            "```\n"
+            "cd /opt/jams\n"
+            "sudo -u www-data git pull\n"
+            f'sudo -u www-data /opt/jams/.venv/bin/python scripts/index_lhc_case.py "{title[:40]}"\n'
+            "sudo systemctl restart jams-backend\n"
+            "```\n\n"
+            "Or push full index from PC: `push_lhc_to_github.ps1 -IncludeIndexed` then `git lfs pull`."
         )
 
     status = "PDF on disk" if has_pdf else "metadata only"
@@ -1384,7 +1397,7 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references (case id
     if wants_case_content_answer(user_question) and not metadata_matches and not temp_docs:
         manifest_hits = search_manifest_by_metadata(user_question, limit=3)
         if manifest_hits:
-            loaded = ensure_case_loaded_from_manifest(manifest_hits[0])
+            loaded, load_error = ensure_case_loaded_from_manifest(manifest_hits[0])
             if loaded:
                 metadata_matches = [loaded]
                 indexed_results = search_indexed_docs(
@@ -1419,7 +1432,7 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
                         "status": "success",
                         "message": "Case indexed on demand and explained.",
                     }
-            response = reply_manifest_case_not_indexed(manifest_hits[0])
+            response = reply_manifest_case_not_indexed(manifest_hits[0], load_error)
             history = history + [{"role": "assistant", "content": response}]
             return {
                 "history": history,
