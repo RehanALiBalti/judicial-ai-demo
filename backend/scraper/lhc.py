@@ -26,6 +26,7 @@ from backend.persistence import (
     ensure_data_dirs,
     lhc_manifest_item_key,
     load_lhc_manifest,
+    portable_data_path,
     save_lhc_manifest,
 )
 
@@ -75,15 +76,9 @@ def stable_pdf_filename(pdf_url: str) -> str:
 
 
 def resolve_local_pdf(record: Dict[str, Any]) -> Optional[str]:
-    pdf_path = record.get("pdf_path")
-    if pdf_path and os.path.isfile(pdf_path):
-        return pdf_path
-    pdf_url = record.get("pdf_url")
-    if pdf_url:
-        stable = LHC_PDF_DIR / stable_pdf_filename(pdf_url)
-        if stable.is_file():
-            return str(stable)
-    return None
+    from backend.persistence import resolve_lhc_pdf_path
+
+    return resolve_lhc_pdf_path(record)
 
 
 def parse_total_count(html: str) -> Optional[int]:
@@ -334,7 +329,7 @@ def sync_lhc_judgments(
             continue
 
         record.update({
-            "pdf_path": pdf_path,
+            "pdf_path": portable_data_path(pdf_path),
             "file_name": filename,
             "pdf_url": pdf_url,
             "indexed": False,

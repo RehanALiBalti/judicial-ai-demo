@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -93,6 +93,41 @@ def lhc_manifest_item_key(item: Dict[str, Any]) -> str:
     return f"lhc|{citation}|{case_no}"
 
 
+def resolve_lhc_pdf_path(item: Dict[str, Any]) -> Optional[str]:
+    """Find LHC PDF on this machine (ignores Windows paths from another host)."""
+    file_name = item.get("file_name")
+    if file_name:
+        candidate = LHC_PDF_DIR / file_name
+        if candidate.is_file():
+            return str(candidate)
+    pdf_url = item.get("pdf_url")
+    if pdf_url:
+        from backend.scraper.lhc import stable_pdf_filename
+
+        candidate = LHC_PDF_DIR / stable_pdf_filename(pdf_url)
+        if candidate.is_file():
+            return str(candidate)
+    raw = item.get("pdf_path")
+    if raw:
+        name = Path(str(raw).replace("\\", "/")).name
+        if name:
+            candidate = LHC_PDF_DIR / name
+            if candidate.is_file():
+                return str(candidate)
+        p = Path(raw)
+        if p.is_file():
+            return str(p)
+    return None
+
+
+def portable_data_path(abs_path: str) -> str:
+    """Store paths relative to project root for cross-platform git sync."""
+    try:
+        return str(Path(abs_path).resolve().relative_to(BASE_DIR.resolve()))
+    except ValueError:
+        return abs_path
+
+
 def load_lhc_manifest() -> Dict[str, Any]:
     ensure_data_dirs()
     if not LHC_MANIFEST_PATH.exists():
@@ -107,17 +142,23 @@ def load_lhc_manifest() -> Dict[str, Any]:
             merged[key] = item
             continue
         prev = merged[key]
-        prev_path = prev.get("pdf_path")
-        new_path = item.get("pdf_path")
-        prev_ok = prev_path and Path(prev_path).is_file()
-        new_ok = new_path and Path(new_path).is_file()
+        prev_path = resolve_lhc_pdf_path(prev) or prev.get("pdf_path")
+        new_path = resolve_lhc_pdf_path(item) or item.get("pdf_path")
+        prev_ok = prev_path and Path(str(prev_path)).is_file()
+        new_ok = new_path and Path(str(new_path)).is_file()
         if new_ok and not prev_ok:
             merged[key] = item
         elif item.get("indexed") and not prev.get("indexed"):
             merged[key] = {**prev, **item, "indexed": True, "case_id": item.get("case_id") or prev.get("case_id")}
         else:
             merged[key] = {**prev, **item, "pdf_path": prev.get("pdf_path") or item.get("pdf_path")}
-    manifest["items"] = list(merged.values())
+    fixed_items = []
+    for item in merged.values():
+        local_pdf = resolve_lhc_pdf_path(item)
+        if local_pdf:
+            item = {**item, "pdf_path": portable_data_path(local_pdf)}
+        fixed_items.append(item)
+    manifest["items"] = fixed_items
     return manifest
 
 

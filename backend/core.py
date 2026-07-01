@@ -623,24 +623,20 @@ def reply_court_overview(user_question: str) -> str:
 
 def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Index a manifest case from local PDF if the AI store on this server is missing it."""
+    from backend.persistence import resolve_lhc_pdf_path
+
     case_id = item.get("case_id")
     if case_id:
         found = lookup_case(str(case_id))
         if found:
             return found
 
-    pdf_path = item.get("pdf_path")
-    if not pdf_path or not os.path.isfile(pdf_path):
-        try:
-            from backend.scraper.lhc import resolve_local_pdf
-
-            pdf_path = resolve_local_pdf(item)
-        except Exception:
-            pdf_path = None
-    if not pdf_path or not os.path.isfile(pdf_path):
+    pdf_path = resolve_lhc_pdf_path(item)
+    if not pdf_path:
         return None
 
     try:
+        item = {**item, "pdf_path": pdf_path}
         if item.get("source") == "fccp":
             result = index_fccp_judgment(pdf_path, item)
         else:
@@ -653,16 +649,11 @@ def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Optional[Dict[str,
 
 
 def reply_manifest_case_not_indexed(item: Dict[str, Any]) -> str:
+    from backend.persistence import resolve_lhc_pdf_path
+
     title = item.get("case_title") or item.get("title") or "Unknown case"
     court = item.get("court") or "N/A"
-    has_pdf = bool(item.get("pdf_path")) and os.path.isfile(str(item.get("pdf_path", "")))
-    if not has_pdf:
-        try:
-            from backend.scraper.lhc import resolve_local_pdf
-
-            has_pdf = bool(resolve_local_pdf(item))
-        except Exception:
-            pass
+    has_pdf = bool(resolve_lhc_pdf_path(item))
 
     if item.get("indexed") and item.get("case_id"):
         return (
