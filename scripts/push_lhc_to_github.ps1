@@ -32,7 +32,20 @@ if ($IncludeIndexed) {
         exit 1
     }
     git lfs install
-    git add data/jams_store.json data/chroma/
+    if (-not (Test-Path "data\jams_store.json")) {
+        Write-Host "ERROR: data\jams_store.json not found. Run --index-only first."
+        exit 1
+    }
+    if (-not (Test-Path "data\chroma")) {
+        Write-Host "ERROR: data\chroma not found. Run --index-only first."
+        exit 1
+    }
+    $storeMb = [math]::Round((Get-Item "data\jams_store.json").Length / 1MB, 1)
+    $chromaGb = [math]::Round(((Get-ChildItem "data\chroma" -Recurse -File | Measure-Object Length -Sum).Sum / 1GB), 2)
+    Write-Host "Indexed AI store: jams_store ${storeMb} MB, chroma ~${chromaGb} GB (Git LFS)"
+    Write-Host "Using git add -f (files are in .gitignore but tracked via LFS)"
+    git add -f data/jams_store.json
+    git add -f data/chroma/
 }
 
 git status --short data/ | Select-Object -First 20
