@@ -621,19 +621,71 @@ def reply_court_overview(user_question: str) -> str:
     return reply_case_inventory()
 
 
+def ensure_case_loaded_from_manifest(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Index a manifest case from local PDF if the AI store on this server is missing it."""
+    case_id = item.get("case_id")
+    if case_id:
+        found = lookup_case(str(case_id))
+        if found:
+            return found
+
+    pdf_path = item.get("pdf_path")
+    if not pdf_path or not os.path.isfile(pdf_path):
+        try:
+            from backend.scraper.lhc import resolve_local_pdf
+
+            pdf_path = resolve_local_pdf(item)
+        except Exception:
+            pdf_path = None
+    if not pdf_path or not os.path.isfile(pdf_path):
+        return None
+
+    try:
+        if item.get("source") == "fccp":
+            result = index_fccp_judgment(pdf_path, item)
+        else:
+            result = index_lhc_judgment(pdf_path, item)
+        if result.get("success"):
+            return lookup_case(str(result.get("case_id") or case_id or ""))
+    except Exception:
+        return None
+    return None
+
+
 def reply_manifest_case_not_indexed(item: Dict[str, Any]) -> str:
     title = item.get("case_title") or item.get("title") or "Unknown case"
     court = item.get("court") or "N/A"
-    has_pdf = bool(item.get("pdf_path"))
-    status = "indexed" if item.get("indexed") else ("PDF downloaded" if has_pdf else "metadata only")
+    has_pdf = bool(item.get("pdf_path")) and os.path.isfile(str(item.get("pdf_path", "")))
+    if not has_pdf:
+        try:
+            from backend.scraper.lhc import resolve_local_pdf
+
+            has_pdf = bool(resolve_local_pdf(item))
+        except Exception:
+            pass
+
+    if item.get("indexed") and item.get("case_id"):
+        return (
+            f"This case is marked **indexed** in the manifest (from your PC) but the "
+            f"**AI database is not loaded on this server** yet.\n\n"
+            f"- **Title:** {title}\n"
+            f"- **Court:** {court}\n"
+            f"- **Manifest case ID:** {item.get('case_id')}\n\n"
+            "**Fix (choose one):**\n"
+            "1. Push indexed data from PC: `push_lhc_to_github.ps1 -IncludeIndexed`\n"
+            "2. On server: `/opt/jams/.venv/bin/python scripts/run_lhc_sync.py --index-only --limit 50`\n"
+            "   then `systemctl restart jams-backend`"
+        )
+
+    status = "PDF on disk" if has_pdf else "metadata only"
     return (
-        f"I found this case in the **manifest** but it is **not searchable in AI chat** yet:\n\n"
+        f"I found this case in the **manifest** but it is **not indexed for AI chat** yet:\n\n"
         f"- **Title:** {title}\n"
         f"- **Court:** {court}\n"
         f"- **Status:** {status}\n\n"
-        "Run indexing on the server or PC:\n"
-        "`python scripts/run_lhc_sync.py --index-only --limit 50`\n\n"
-        "Then push `data/jams_store.json` and `data/chroma/` to the server."
+        "Run on server:\n"
+        "`/opt/jams/.venv/bin/python scripts/run_lhc_sync.py --index-only --limit 50`\n\n"
+        "Or push `data/jams_store.json` and `data/chroma/` from your PC."
     )
 
 
@@ -1309,6 +1361,41 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references (case id
     if wants_case_content_answer(user_question) and not metadata_matches and not temp_docs:
         manifest_hits = search_manifest_by_metadata(user_question, limit=3)
         if manifest_hits:
+            loaded = ensure_case_loaded_from_manifest(manifest_hits[0])
+            if loaded:
+                metadata_matches = [loaded]
+                indexed_results = search_indexed_docs(
+                    user_question, top_k=6, case_ids=[loaded["case_id"]],
+                )
+                if indexed_results:
+                    sources_text = build_sources_text(indexed_results)
+                    prompt = f"""
+You are an AI judicial research chat assistant.
+Explain the case ONLY from the provided sources.
+User question: {user_question}
+
+Case: {loaded.get('title')} ({loaded.get('case_id')})
+Court: {loaded.get('court')}
+
+Sources:
+{sources_text}
+
+Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
+"""
+                    try:
+                        assistant_answer = generate_from_model(prompt, max_new_tokens=700)
+                    except Exception as error:
+                        assistant_answer = f"AI generation failed: {str(error)}"
+                    if assistant_answer.startswith("Error"):
+                        assistant_answer = format_topic_case_cards(indexed_results[:3])
+                    note = "_Indexed this case from the local PDF on the server._\n\n"
+                    history = history + [{"role": "assistant", "content": note + assistant_answer}]
+                    return {
+                        "history": history,
+                        "temp_docs": temp_docs,
+                        "status": "success",
+                        "message": "Case indexed on demand and explained.",
+                    }
             response = reply_manifest_case_not_indexed(manifest_hits[0])
             history = history + [{"role": "assistant", "content": response}]
             return {
