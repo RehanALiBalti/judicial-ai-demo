@@ -716,10 +716,63 @@ def is_case_inventory_query(query: str) -> bool:
     q = normalize_text(query)
     phrases = (
         "what cases", "which cases", "list cases", "indexed cases",
-        "how many cases", "any cases", "show cases", "cases indexed",
-        "cases are indexed", "cases do you have",
+        "how many cases", "how much cases", "any cases", "show cases",
+        "cases indexed", "cases are indexed", "cases do you have",
+        "cases of record", "case records", "case record",
+        "total cases", "number of cases", "count cases",
+        "how many record", "how much record", "records do you have",
+        "cases in database", "cases in system", "in the dataset",
     )
-    return any(p in q for p in phrases)
+    if any(p in q for p in phrases):
+        return True
+    if re.search(r"how\s+(many|much)\s+.*\b(case|record)", q):
+        return True
+    return False
+
+
+def reply_case_inventory() -> str:
+    stats = get_dashboard_stats()
+    lines = [
+        f"### Case records in JAMS\n",
+        f"**AI chat (indexed):** {stats['cases']} case(s), "
+        f"{stats['chunks']} text chunks, {stats['pages']} pages\n",
+    ]
+
+    try:
+        from backend.scraper.fccp import get_fccp_status
+        from backend.scraper.lhc import get_lhc_status
+
+        fccp = get_fccp_status()
+        lhc = get_lhc_status()
+        lines.append(
+            f"**FCCP judgments:** {fccp.get('total_items', 0)} in manifest, "
+            f"{fccp.get('downloaded', 0)} PDFs, {fccp.get('indexed', 0)} indexed for chat"
+        )
+        lines.append(
+            f"**LHC judgments:** {lhc.get('total_items', 0)} in manifest, "
+            f"{lhc.get('downloaded', 0)} PDFs, {lhc.get('indexed', 0)} indexed for chat"
+        )
+        total_records = (fccp.get("total_items") or 0) + (lhc.get("total_items") or 0)
+        lines.insert(1, f"**Total records (FCCP + LHC manifests):** {total_records}\n")
+    except Exception:
+        pass
+
+    if not cases:
+        lines.append(
+            "\nNo cases are indexed for AI chat yet. "
+            "Use **FCCP/LHC Judgments** tabs to index PDFs, or **Upload Case**."
+        )
+        return "\n".join(lines)
+
+    lines.append("\n**Indexed cases (sample):**")
+    for case in cases[:15]:
+        lines.append(
+            f"- **{case.get('title')}** (`{case.get('case_id')}`) — "
+            f"{case.get('court') or 'N/A'}, {case.get('decision_date') or 'N/A'}"
+        )
+    if len(cases) > 15:
+        lines.append(f"\n_…and {len(cases) - 15} more indexed case(s)._")
+    return "\n".join(lines)
 
 
 def wants_case_content_answer(query: str) -> bool:
@@ -789,23 +842,6 @@ Reply:"""
         f"Hello! I'm **JAMS**. You have **{stats['cases']}** indexed case(s) ready. "
         "Ask me about case content, or attach a PDF for quick analysis."
     )
-
-
-def reply_case_inventory() -> str:
-    if not cases:
-        return (
-            "No cases are indexed in this session yet.\n\n"
-            "• Use **Upload Case** to add judicial PDFs to the database, or\n"
-            "• Attach a PDF in this chat for temporary Q&A (not stored)."
-        )
-    lines = [f"**{len(cases)} case(s) indexed in this session:**\n"]
-    for case in cases:
-        lines.append(
-            f"- **{case.get('title')}** (`{case.get('case_id')}`) — "
-            f"{case.get('court') or 'N/A'}, {case.get('decision_date') or 'N/A'}, "
-            f"{case.get('pages') or 'N/A'} pages"
-        )
-    return "\n".join(lines)
 
 
 def chat(
