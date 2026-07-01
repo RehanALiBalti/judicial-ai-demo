@@ -15,18 +15,10 @@ frontend/dist/
 .env.*
 !.env.example
 
-# Local runtime data (re-sync on server via import tabs)
+# Local runtime data — LHC/FCCP datasets are tracked via Git LFS (see .gitattributes)
 data/jams_store.json
 data/store.json
 data/faiss.index
-data/fccp/manifest.json
-data/fccp/pdfs/*
-!data/fccp/pdfs/.gitkeep
-
-data/lhc/manifest.json
-data/lhc/pdfs/*
-!data/lhc/pdfs/.gitkeep
-
 data/chroma/
 
 # Uploads & temp
