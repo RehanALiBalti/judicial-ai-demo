@@ -217,6 +217,12 @@ def lhc_sync(
     }
 
 
+@app.get("/api/chat/suggestions")
+def chat_suggestions():
+    from backend.chat_router import CHAT_SUGGESTIONS
+    return {"suggestions": CHAT_SUGGESTIONS}
+
+
 @app.post("/api/chat")
 async def chat_endpoint(
     message: str = Form(""),

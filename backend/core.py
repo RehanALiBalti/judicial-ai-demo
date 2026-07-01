@@ -13,6 +13,17 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from pypdf import PdfReader
 
+from backend.chat_router import (
+    CHAT_SUGGESTIONS,
+    filter_relevant_results,
+    generate_grounded_answer,
+    is_capabilities_query,
+    merge_search_results,
+    prepare_chat_query,
+    reply_capabilities,
+    reply_vague_query_help,
+    search_with_query_variants,
+)
 from backend.persistence import load_store, manifest_item_key, save_store
 from backend.rag import llm as rag_llm
 from backend.rag.vectorstore import (
@@ -480,6 +491,8 @@ def extract_case_number_tokens(query: str) -> List[str]:
         r"\b\d{1,5}/\d{2,4}\b",
         r"\b\d{1,5}-\d{2,4}\b",
         r"\b\d{1,4}-[a-z]\s+of\s+\d{4}\b",
+        r"\bwrit\s+petition[^a-z0-9]*\d{1,5}[-/]\d{2,4}\b",
+        r"\bw\.?\s*p\.?\s*no\.?\s*\d+",
         r"\bc\.?\s*p\.?\s*l\.?\s*a\.?\s*[\d\-/a-z]+",
         r"\bf\.?\s*c\.?\s*p\.?\s*l\.?\s*a\.?\s*[\d\-/a-z]+",
         r"\br\.?\s*f\.?\s*a\.?\s*[\d\-/a-z]+",
@@ -707,6 +720,8 @@ def is_topic_case_request(query: str) -> bool:
         "find relevant cases", "matching cases about", "search for cases",
         "human rights", "fundamental rights", "regarding human",
         "any cases on", "search cases",
+        "cases dhund", "case dhund", "cases dikhao", "case dikhao",
+        "mujhe cases", "koi case", "mil sakta", "related cases",
     )
     return any(p in q for p in phrases)
 
@@ -1099,32 +1114,13 @@ def reply_summarize_case(case: Dict[str, Any], user_question: str) -> str:
             "Run indexing or push `jams_store.json` + `chroma/` from your PC."
         )
 
-    sources_text = build_sources_text(indexed_results, max_chars_per_source=800)
-    prompt = f"""
-You are an AI judicial research assistant. Summarize this case ONLY from the sources below.
-
-Case ID: {case.get('case_id')}
-Title: {case.get('title')}
-Court: {case.get('court')}
-Decision Date: {case.get('decision_date')}
-
-User request: {user_question}
-
-Sources:
-{sources_text}
-
-Provide:
-1) Brief facts
-2) Key issues
-3) Court decision / outcome
-4) Source references (case id + page numbers)
-"""
-    try:
-        answer = generate_from_model(prompt, max_new_tokens=700)
-    except Exception as exc:
-        answer = f"AI generation failed: {exc}"
-    if answer.startswith("Error"):
-        answer = format_topic_case_cards(indexed_results[:4])
+    indexed_results = filter_relevant_results(user_question, indexed_results)
+    answer = generate_grounded_answer(
+        user_question or f"Summarize {case.get('title', '')}",
+        indexed_results,
+        context_note=f"Case {case.get('case_id')}: {case.get('title')}",
+        max_tokens=750,
+    )
     return f"### {case.get('case_id')} — {case.get('title')}\n\n{answer}"
 
 
@@ -1346,7 +1342,7 @@ def is_conversational_query(query: str) -> bool:
             "case", "court", "bail", "petition", "judgment", "judgement", "writ",
             "appeal", "plaintiff", "defendant", "section", "article", "law",
             "fccp", "lhc", "summarize", "explain", "find case", "indexed",
-            "relief", "decision", "judge", "order",
+            "relief", "decision", "judge", "order", "jams", "ask",
         )
         if not any(m in q for m in legal_markers):
             social_starts = (
@@ -1469,9 +1465,11 @@ def is_case_record_lookup(query: str) -> bool:
 
 def is_attached_pdf_question(query: str, temp_docs: List[Dict[str, Any]], has_new_pdf: bool = False) -> bool:
     """User wants an answer from the PDF attached in this chat session."""
+    from backend.chat_router import normalize_user_message
+
     if not temp_docs:
         return False
-    q = normalize_text(query)
+    q = normalize_text(normalize_user_message(query))
     if not q:
         return has_new_pdf
     pdf_phrases = (
@@ -1479,6 +1477,7 @@ def is_attached_pdf_question(query: str, temp_docs: List[Dict[str, Any]], has_ne
         "about this", "about it", "this pdf", "this file", "attached", "attachment",
         "explain it", "explain this", "key point", "overview", "details", "read this",
         "analyze", "analyse", "review", "samjhao", "summery", "summary",
+        "samjha do", "bata do", "batao", "detail do", "poora batao",
     )
     if any(p in q for p in pdf_phrases):
         return True
@@ -1627,6 +1626,32 @@ def chat(
         display_user_message = f"📎 {pdf_filename}\n\n{user_question}"
 
     history = history + [{"role": "user", "content": display_user_message}]
+
+    prior_history = history[:-1]
+    parsed = prepare_chat_query(user_question, prior_history)
+    resolved_question = parsed.resolved
+    search_queries = parsed.search_queries
+    follow_context = parsed.follow_context
+
+    if parsed.intent == "too_vague":
+        response = reply_vague_query_help()
+        history = history + [{"role": "assistant", "content": response}]
+        return {
+            "history": history,
+            "temp_docs": temp_docs,
+            "status": "info",
+            "message": "Need more detail.",
+        }
+
+    if is_capabilities_query(user_question) or parsed.intent == "capabilities":
+        response = reply_capabilities()
+        history = history + [{"role": "assistant", "content": response}]
+        return {
+            "history": history,
+            "temp_docs": temp_docs,
+            "status": "success",
+            "message": "Capabilities sent.",
+        }
 
     if temp_docs and is_attached_pdf_question(user_question, temp_docs, has_new_pdf=has_pdf):
         response = reply_from_attached_pdf(user_question, temp_docs, attachment_notice)
@@ -1822,16 +1847,18 @@ Answer format:
                 "message": "Judge query answered.",
             }
 
-    metadata_matches = search_cases_by_metadata(user_question)
+    metadata_matches = search_cases_by_metadata(resolved_question)
     matched_case_ids = [c["case_id"] for c in metadata_matches]
 
-    if wants_case_content_answer(user_question) and metadata_matches and not temp_docs:
+    if wants_case_content_answer(resolved_question) and metadata_matches and not temp_docs:
         focus_ids = matched_case_ids[:1] if len(metadata_matches) == 1 else matched_case_ids[:3]
-        indexed_results = search_indexed_docs(user_question, top_k=6, case_ids=focus_ids)
+        indexed_results = search_with_query_variants(
+            search_queries, top_k=8, case_ids=focus_ids,
+        )
         if not indexed_results and len(metadata_matches) == 1:
             indexed_results = search_documents_by_keyword(
-                metadata_matches[0].get("title", "") or user_question,
-                top_k=6,
+                metadata_matches[0].get("title", "") or search_queries[0],
+                top_k=8,
                 diverse_cases=False,
             )
             indexed_results = [
@@ -1842,30 +1869,15 @@ Answer format:
             if manifest_item:
                 loaded, load_error = ensure_case_loaded_from_manifest(manifest_item)
                 if loaded:
-                    indexed_results = search_indexed_docs(
-                        user_question, top_k=6, case_ids=[loaded["case_id"]],
+                    indexed_results = search_with_query_variants(
+                        search_queries, top_k=8, case_ids=[loaded["case_id"]],
                     )
         if indexed_results:
-            sources_text = build_sources_text(indexed_results)
-            prompt = f"""
-You are an AI judicial research chat assistant.
-Explain the case below ONLY from the provided sources.
-User question: {user_question}
-
-Case: {metadata_matches[0].get('title')} ({metadata_matches[0].get('case_id')})
-Court: {metadata_matches[0].get('court')}
-
-Sources:
-{sources_text}
-
-Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references (case id + page).
-"""
-            try:
-                assistant_answer = generate_from_model(prompt, max_new_tokens=700)
-            except Exception as error:
-                assistant_answer = f"AI generation failed: {str(error)}"
-            if assistant_answer.startswith("Error"):
-                assistant_answer = format_topic_case_cards(indexed_results[:3])
+            indexed_results = filter_relevant_results(resolved_question, indexed_results)
+            context = follow_context or f"Case: {metadata_matches[0].get('title')}"
+            assistant_answer = generate_grounded_answer(
+                resolved_question, indexed_results, context_note=context, max_tokens=750,
+            )
             history = history + [{"role": "assistant", "content": assistant_answer}]
             return {
                 "history": history,
@@ -1881,29 +1893,15 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references (case id
             if loaded:
                 metadata_matches = [loaded]
                 indexed_results = search_indexed_docs(
-                    user_question, top_k=6, case_ids=[loaded["case_id"]],
+                    search_query, top_k=8, case_ids=[loaded["case_id"]],
                 )
                 if indexed_results:
-                    sources_text = build_sources_text(indexed_results)
-                    prompt = f"""
-You are an AI judicial research chat assistant.
-Explain the case ONLY from the provided sources.
-User question: {user_question}
-
-Case: {loaded.get('title')} ({loaded.get('case_id')})
-Court: {loaded.get('court')}
-
-Sources:
-{sources_text}
-
-Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
-"""
-                    try:
-                        assistant_answer = generate_from_model(prompt, max_new_tokens=700)
-                    except Exception as error:
-                        assistant_answer = f"AI generation failed: {str(error)}"
-                    if assistant_answer.startswith("Error"):
-                        assistant_answer = format_topic_case_cards(indexed_results[:3])
+                    indexed_results = filter_relevant_results(resolved_question, indexed_results)
+                    assistant_answer = generate_grounded_answer(
+                        resolved_question, indexed_results,
+                        context_note=f"Case: {loaded.get('title')}",
+                        max_tokens=750,
+                    )
                     note = "_Indexed this case from the local PDF on the server._\n\n"
                     history = history + [{"role": "assistant", "content": note + assistant_answer}]
                     return {
@@ -1940,25 +1938,26 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
             "message": "Matching cases found.",
         }
 
-    temp_results = search_temp_docs(user_question, temp_docs, top_k=min(6, len(temp_docs))) if temp_docs else []
+    temp_results = (
+        search_temp_docs(search_queries[0], temp_docs, top_k=min(6, len(temp_docs)))
+        if temp_docs else []
+    )
 
-    if matched_case_ids and wants_case_content_answer(user_question) and not temp_docs:
-        indexed_results = search_indexed_docs(
-            user_question, top_k=5, case_ids=matched_case_ids,
+    if matched_case_ids and wants_case_content_answer(resolved_question) and not temp_docs:
+        indexed_results = search_with_query_variants(
+            search_queries, top_k=8, case_ids=matched_case_ids,
         )
-        if not indexed_results:
-            indexed_results = search_indexed_docs_global(user_question, top_k=4)
     else:
-        broad = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
+        broad = parsed.intent == "topic_search" or (
+            is_broad_legal_topic_query(resolved_question) or is_topic_case_request(resolved_question)
+        )
         if broad and not temp_docs:
-            indexed_results = search_indexed_docs_balanced_courts(user_question, top_k=TOPIC_RESULTS_BATCH)
-            if not indexed_results:
-                indexed_results = search_indexed_docs_global(
-                    user_question, top_k=TOPIC_RESULTS_BATCH + 4, diverse_cases=True,
-                )
+            indexed_results = search_with_query_variants(
+                search_queries, top_k=TOPIC_RESULTS_BATCH, balanced=True,
+            )
         elif not temp_docs:
-            indexed_results = search_indexed_docs_global(
-                user_question, top_k=TOPIC_RESULTS_BATCH, diverse_cases=False,
+            indexed_results = search_with_query_variants(
+                search_queries, top_k=TOPIC_RESULTS_BATCH,
             )
         else:
             indexed_results = []
@@ -1969,15 +1968,21 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
     else:
         results = indexed_results
     results = deduplicate_results(results, max_results=TOPIC_RESULTS_BATCH)
+    is_topic_listing = (
+        is_broad_legal_topic_query(resolved_question) or is_topic_case_request(resolved_question)
+    )
+    if results and not is_topic_listing:
+        results = filter_relevant_results(resolved_question, results, max_results=TOPIC_RESULTS_BATCH)
 
-    if not results and (
-        is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
-    ):
+    if not results and is_topic_listing:
         if documents:
-            results = search_documents_by_keyword(user_question, top_k=TOPIC_RESULTS_BATCH + 4)
-            results = deduplicate_results(results, max_results=TOPIC_RESULTS_BATCH)
+            kw_batches = [
+                search_documents_by_keyword(q, top_k=TOPIC_RESULTS_BATCH + 4)
+                for q in search_queries[:3]
+            ]
+            results = merge_search_results(kw_batches, max_results=TOPIC_RESULTS_BATCH)
         if not results:
-            manifest_hits = search_manifest_by_topic(user_question, limit=8)
+            manifest_hits = search_manifest_by_topic(resolved_question, limit=8)
             if manifest_hits:
                 results = manifest_hits
 
@@ -2042,15 +2047,7 @@ Give: 1) Brief facts 2) Issues 3) Decision/outcome 4) Source references.
             "message": "No matching source found.",
         }
 
-    sources_text = build_sources_text(results)
-    previous_chat = build_chat_history_text(history[:-1])
-    multi_case_note = ""
-    topic_listing = is_broad_legal_topic_query(user_question) or is_topic_case_request(user_question)
-    if is_broad_legal_topic_query(user_question):
-        multi_case_note = (
-            "- This is a cross-case legal topic: cite ALL relevant cases in the sources "
-            "(include both FCCP and Lahore High Court when present).\n"
-        )
+    topic_listing = is_topic_listing
     if topic_listing:
         prompt = f"""
 You are an AI judicial research chat assistant.
@@ -2060,7 +2057,7 @@ Do NOT list sources yourself — full source cards are appended after your text.
 Mention how many cases were found and which courts (FCCP / LHC) appear in the results.
 Do not invent cases.
 
-User question: {user_question}
+User question: {resolved_question}
 
 Number of sources: {len(results)}
 Courts in results: {", ".join(sorted({(r.get("court") or "N/A") for r in results}))}
@@ -2074,43 +2071,12 @@ Brief introduction:"""
             intro = f"Here are **{len(results)}** case(s) from indexed sources matching your topic:"
         assistant_answer = intro + "\n\n" + format_topic_case_cards(results)
     else:
-        prompt = f"""
-You are an AI judicial research chat assistant.
-
-CRITICAL:
-- Answer ONLY the CURRENT user question below.
-- Do NOT repeat or copy any previous assistant answer.
-- Previous conversation is background context only.
-
-Strict rules:
-- Answer only from the provided sources.
-- Sources may include indexed cases and/or a temporary PDF attached in chat.
-- A temporary chat PDF is only chat context and must not be treated as stored case database.
-- Do not invent case names, citations, laws, facts, or decisions.
-- If not supported by sources, say: "No supported source found."
-- Always mention source type, title, case id, and page number.
-- Keep answer clear, detailed, and structured.
-- When the user asks for details about a named case, summarize facts, issues, and outcome from the sources.
-{multi_case_note}
-Previous conversation:
-{previous_chat if previous_chat else "No previous conversation."}
-
-CURRENT user question (answer this only):
-{user_question}
-
-Available sources:
-{sources_text}
-
-Answer format:
-1. Answer
-2. Relevant Source
-3. Reasoning
-4. Source References
-"""
-        try:
-            assistant_answer = generate_from_model(prompt, max_new_tokens=500)
-        except Exception as error:
-            assistant_answer = f"AI generation failed: {str(error)}"
+        assistant_answer = generate_grounded_answer(
+            resolved_question,
+            results,
+            context_note=follow_context,
+            max_tokens=700,
+        )
 
     if attachment_notice:
         assistant_answer = f"**Attachment processed:** {attachment_notice}\n\n{assistant_answer}"

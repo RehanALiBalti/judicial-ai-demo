@@ -7,9 +7,12 @@ import TypingIndicator from "../components/TypingIndicator";
 import { IconAttach, IconClose, IconPdf, IconSend } from "../components/ChatIcons";
 
 const SUGGESTIONS = [
-  "What cases are indexed?",
-  "Summarize key legal points",
-  "Find bail related content",
+  "How many cases are indexed?",
+  "zamanat / bail cases dikhao",
+  "F.C.P.L.A. No.73-K of 2026 samjhao",
+  "CASE-055 summarize",
+  "court ne raihat di — cases find karo",
+  "What can you ask JAMS?",
 ];
 
 export default function ChatPage({ onStatsChange }) {
