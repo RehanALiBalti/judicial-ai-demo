@@ -73,7 +73,7 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t
 
 echo "==> Pull Ollama model (may take a few minutes)"
-ollama pull qwen2.5:1.5b || true
+ollama pull qwen2.5:7b || true
 
 echo ""
 echo "Done. Next steps:"

@@ -87,18 +87,18 @@ python scripts/run_lhc_sync.py --metadata-only
 python scripts/run_lhc_sync.py --limit 50
 ```
 
-## LLM: Ollama `qwen2.5:1.5b` + LangChain RAG
+## LLM: Ollama `qwen2.5:7b` + LangChain RAG
 
 Chat uses **LangChain** with **Chroma** (persisted at `data/chroma/`) and **MMR retrieval** for multi-case answers. LLM via **Ollama**.
 
 ```powershell
-ollama pull qwen2.5:1.5b
+ollama pull qwen2.5:7b
 ollama serve
 ```
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model name |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model name |
 | `OLLAMA_URL` | `http://localhost:11434/api/generate` | Ollama API |
 | `EMBEDDING_MODEL_NAME` | `sentence-transformers/all-MiniLM-L6-v2` | Embeddings |
 | `CHROMA_DIR` | `data/chroma` | Vector index on disk |

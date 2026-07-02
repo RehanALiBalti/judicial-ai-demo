@@ -30,7 +30,7 @@ STORE_PATH = DATA_DIR / "store.json"
 FAISS_PATH = DATA_DIR / "faiss.index"
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:1.5b"
+OLLAMA_MODEL = "qwen2.5:7b"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 CHUNK_SIZE = 800

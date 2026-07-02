@@ -43,7 +43,7 @@ nginx -t
 
 systemctl enable ollama 2>/dev/null || true
 systemctl start ollama 2>/dev/null || true
-ollama pull qwen2.5:1.5b 2>/dev/null || true
+ollama pull qwen2.5:7b 2>/dev/null || true
 
 systemctl restart jams-backend
 systemctl reload nginx

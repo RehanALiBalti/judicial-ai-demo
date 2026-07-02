@@ -19,5 +19,5 @@ chromadb>=0.5.0
 langchain-huggingface>=0.1.0
 langchain-chroma>=0.2.0
 
-# LLM: Ollama (qwen2.5:1.5b) — install Ollama separately, not via pip
+# LLM: Ollama (qwen2.5:7b) — install Ollama separately, not via pip
 # Embeddings: HuggingFace via LangChain (sentence-transformers)

@@ -187,7 +187,7 @@ HOST=127.0.0.1
 PORT=8000
 CORS_ORIGINS=http://203.0.113.10,https://jams.example.com
 OLLAMA_URL=http://127.0.0.1:11434/api/generate
-OLLAMA_MODEL=qwen2.5:1.5b
+OLLAMA_MODEL=qwen2.5:7b
 ```
 
 ---
@@ -198,7 +198,7 @@ OLLAMA_MODEL=qwen2.5:1.5b
 # Ollama (usually auto-starts after install)
 sudo systemctl enable ollama
 sudo systemctl start ollama
-ollama pull qwen2.5:1.5b
+ollama pull qwen2.5:7b
 
 # Backend (auto-restart on crash + boot)
 sudo systemctl enable jams-backend
@@ -306,7 +306,7 @@ sudo systemctl reload nginx
 | Problem | Fix |
 |--------|-----|
 | `ModuleNotFoundError: uvicorn` | Use `/opt/jams/.venv/bin/python`, not system Python |
-| Chat returns "AI generation failed" | `ollama list`, ensure `qwen2.5:1.5b` is pulled; `curl http://127.0.0.1:11434/api/tags` |
+| Chat returns "AI generation failed" | `ollama list`, ensure `qwen2.5:7b` is pulled; `curl http://127.0.0.1:11434/api/tags` |
 | 502 Bad Gateway | `sudo journalctl -u jams-backend -f` — backend still loading embeddings (~1–2 min first start) |
 | Empty cases | Run **FCCP Import → Sync** on the server |
 | **Backend offline** in React UI | Backend/nginx not running — run finish script or commands below |
