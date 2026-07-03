@@ -11,7 +11,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from pypdf import PdfReader
 
 from backend.chat_router import (
     CHAT_SUGGESTIONS,
@@ -100,30 +99,7 @@ def clean_filename_title(file_name: str) -> str:
     return name.title()
 
 
-def extract_pdf_text(file_path: str) -> List[Dict[str, Any]]:
-    reader = PdfReader(file_path)
-    pages_text: List[Dict[str, Any]] = []
-    for page_no, page in enumerate(reader.pages, start=1):
-        text = page.extract_text() or ""
-        if text.strip():
-            pages_text.append({"page": page_no, "text": text.strip()})
-    return pages_text
-
-
-def extract_first_pages_text(file_path: str, max_pages: int = 2) -> str:
-    try:
-        reader = PdfReader(file_path)
-        text_parts: List[str] = []
-        total_pages = min(len(reader.pages), max_pages)
-        for page_index in range(total_pages):
-            text = reader.pages[page_index].extract_text() or ""
-            if text.strip():
-                text_parts.append(text.strip())
-        return "\n".join(text_parts).strip()
-    except Exception:
-        return ""
-
-
+from backend.pdf_extract import extract_first_pages_text, extract_pdf_text, extraction_status_message, ocr_available
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 150) -> List[str]:
     clean_text = " ".join(str(text or "").split())
     chunks: List[str] = []
@@ -225,12 +201,19 @@ def guess_decision_date(text: str, file_name: str = "") -> str:
 def auto_fill_metadata_from_path(file_path: str, file_name: str) -> Dict[str, Any]:
     first_text = extract_first_pages_text(file_path, max_pages=2)
     if not first_text:
+        hint = (
+            "No extractable text found. Title guessed from file name."
+        )
+        if not ocr_available():
+            hint += " For scanned PDFs, install Tesseract OCR on the server."
+        else:
+            hint += " OCR is enabled but could not read this file."
         return {
             "case_title": clean_filename_title(file_name),
             "court_name": "",
             "decision_date": "",
             "status": "warning",
-            "message": "No extractable text found. Title guessed from file name. OCR may be required.",
+            "message": hint,
         }
     case_title = guess_case_title(first_text, file_name)
     court_name = guess_court_name(first_text)
@@ -376,7 +359,10 @@ def upload_case_from_path(
     if not pages:
         return {
             "success": False,
-            "message": "No text found in this PDF. This may be a scanned PDF and OCR is required.",
+            "message": extraction_status_message(pages) or (
+                "No text found in this PDF. This may be a scanned PDF — "
+                "install Tesseract OCR (tesseract-ocr poppler-utils) on the server."
+            ),
         }
 
     normalized_date = normalize_date_value(decision_date.strip()) or decision_date.strip()
@@ -1159,9 +1145,12 @@ def process_chat_attachment_from_path(file_path: str, file_name: str) -> Tuple[L
     title = clean_filename_title(file_name) or "Temporary Chat PDF"
     pages = extract_pdf_text(file_path)
     if not pages:
-        return [], "No extractable text found in attached PDF. OCR may be required."
+        return [], extraction_status_message(pages) or (
+            "No extractable text found in attached PDF. OCR may be required."
+        )
     temp_docs: List[Dict[str, Any]] = []
     added_chunks = 0
+    ocr_pages = sum(1 for page in pages if page.get("method") == "ocr")
     for page in pages:
         for chunk_index, chunk in enumerate(chunk_text(page["text"])):
             temp_docs.append({
@@ -1175,7 +1164,12 @@ def process_chat_attachment_from_path(file_path: str, file_name: str) -> Tuple[L
                 "source_type": "chat_temp_pdf",
             })
             added_chunks += 1
-    status = f"Attached PDF processed for this chat only: {title} | Pages: {len(pages)} | Chunks: {added_chunks}."
+    status = (
+        f"Attached PDF processed for this chat only: {title} | "
+        f"Pages: {len(pages)} | Chunks: {added_chunks}."
+    )
+    if ocr_pages:
+        status += f" OCR used on {ocr_pages} scanned page(s)."
     return temp_docs, status
 
 

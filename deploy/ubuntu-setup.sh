@@ -14,7 +14,8 @@ apt-get update
 apt-get install -y \
   python3 python3-venv python3-pip \
   nginx git curl ca-certificates unzip \
-  build-essential
+  build-essential \
+  tesseract-ocr tesseract-ocr-eng poppler-utils
 
 # Node.js 20 LTS (for building frontend)
 if ! command -v node &>/dev/null; then

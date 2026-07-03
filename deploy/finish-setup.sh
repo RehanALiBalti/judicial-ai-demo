@@ -9,6 +9,13 @@ DOMAIN="${DOMAIN:-_}"
 
 echo "==> Finish JAMS setup"
 
+if ! command -v tesseract &>/dev/null; then
+  echo "==> Install OCR dependencies (tesseract + poppler)"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y tesseract-ocr tesseract-ocr-eng poppler-utils
+fi
+
 if [[ ! -f "$APP_DIR/frontend/dist/index.html" ]]; then
   echo "==> Build frontend"
   NPM_CACHE="$APP_DIR/.npm-cache"

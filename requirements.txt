@@ -21,3 +21,8 @@ langchain-chroma>=0.2.0
 
 # LLM: Ollama (qwen2.5:7b) — install Ollama separately, not via pip
 # Embeddings: HuggingFace via LangChain (sentence-transformers)
+
+# OCR for scanned/image PDFs (requires system: tesseract-ocr poppler-utils)
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
